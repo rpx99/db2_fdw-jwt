@@ -88,21 +88,20 @@ char* setSelectParameters (ParamDesc* paramList, ExprContext* econtext) {
   TimestampTz    tstamp;
   bool           is_null;
   bool           first_param = true;
-#ifndef OLD_FDW_API
-  MemoryContext  oldcontext;
-#endif /* OLD_FDW_API */
   StringInfoData info;     /* list of parameters for DEBUG message */
 
   db2Debug1("> setSelectParameters");
   db2Debug2("  paramList: %x",paramList);
   db2Debug2("  econtext : %x",econtext);
-  
+
   initStringInfo (&info);
 
-#ifndef OLD_FDW_API
-  /* switch to short lived memory context */
-  oldcontext = MemoryContextSwitchTo (econtext->ecxt_per_tuple_memory);
-#endif /* OLD_FDW_API */
+  /*
+   * IMPORTANT: Do NOT switch to per-tuple memory context for param->value!
+   * The per-tuple context gets reset between tuples, but DB2 CLI needs
+   * the parameter buffers to remain valid for the entire statement execution.
+   * Use the current context (query-level) instead.
+   */
 
   /* iterate parameter list and fill values */
   for (param = paramList; param; param = param->next) {
@@ -156,11 +155,6 @@ char* setSelectParameters (ParamDesc* paramList, ExprContext* econtext) {
       appendStringInfo (&info, ", ?=\"%s\"", (param->value ? param->value : "(null)"));
     }
   }
-
-#ifndef OLD_FDW_API
-  /* reset memory context */
-  MemoryContextSwitchTo (oldcontext);
-#endif /* OLD_FDW_API */
 
   db2Debug1("< setSelectParameters - returns: '%s'",info.data);
   return info.data;
