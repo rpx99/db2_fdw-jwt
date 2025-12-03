@@ -51,18 +51,19 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
   /* bind the parameters */
   param_count = 0;
   for (param = paramList; param; param = param->next) {
-    ++param_count;
-    db2Debug2("  paramcount      : %d",param_count);
+    int param_index = param_count;  /* 0-based index for indicators array */
+    int param_number = param->colnum + 1;  /* 1-based SQL parameter number from column */
+    db2Debug2("  param_index     : %d",param_index);
+    db2Debug2("  param_number    : %d",param_number);
     db2Debug2("  param->value    : %s",param->value);
     db2Debug2("  param->colnum   : %d",param->colnum);
     db2Debug2("  param->bindType : %d",param->bindType);
-    db2Debug2("  param_count     : %d",param_count);
     db2Debug2("  colName         : %s",db2Table->cols[param->colnum]->colName);
     switch (param->bindType) {
       case BIND_NUMBER: {
         db2Debug3("  param->bindType: BIND_NUMBER");
-        indicators[param_count] = (SQLLEN) ((param->value == NULL) ? SQL_NULL_DATA : 0);
-        db2Debug2("  param_ind       : %d",indicators[param_count]);
+        indicators[param_index] = (SQLLEN) ((param->value == NULL) ? SQL_NULL_DATA : 0);
+        db2Debug2("  param_ind       : %d",indicators[param_index]);
         switch (db2Table->cols[param->colnum]->colType){
           case SQL_SMALLINT:{
             char* end = NULL;
@@ -71,7 +72,7 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
             db2Debug2("  sqlint: %d",param->converted_value.smallint_val);
             db2Debug2("  param->bindType: SQL_SMALLINT");
             rc = SQLBindParameter( session->stmtp->hsql
-                                 , param->colnum+1
+                                 , param_number
                                  , SQL_PARAM_INPUT
                                  , SQL_C_SSHORT
                                  , db2Table->cols[param->colnum]->colType
@@ -79,7 +80,7 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
                                  , 0
                                  , &param->converted_value.smallint_val
                                  , 0
-                                 , &indicators[param_count]
+                                 , &indicators[param_index]
                                  );
           }
           break;
@@ -90,7 +91,7 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
             db2Debug2("  sqlint: %d",param->converted_value.integer_val);
             db2Debug2("  param->bindType: SQL_INTEGER");
             rc = SQLBindParameter( session->stmtp->hsql
-                                 , param->colnum+1
+                                 , param_number
                                  , SQL_PARAM_INPUT
                                  , SQL_C_SLONG
                                  , db2Table->cols[param->colnum]->colType
@@ -98,7 +99,7 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
                                  , 0
                                  , &param->converted_value.integer_val
                                  , 0
-                                 , &indicators[param_count]
+                                 , &indicators[param_index]
                                  );
           }
           break;
@@ -110,7 +111,7 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
             db2Debug2("  param->bindType: SQL_NUMERIC");
             db2Debug2("  num: '%s'",param->converted_value.numeric_val);
             rc = SQLBindParameter( session->stmtp->hsql
-                                 , param->colnum+1
+                                 , param_number
                                  , SQL_PARAM_INPUT
                                  , SQL_C_NUMERIC
                                  , db2Table->cols[param->colnum]->colType
@@ -118,7 +119,7 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
                                  , param->converted_value.numeric_val.scale
                                  , &param->converted_value.numeric_val
                                  , sizeof(param->converted_value.numeric_val)
-                                 , &indicators[param_count]
+                                 , &indicators[param_index]
                                  );
           }
           break;
@@ -127,10 +128,10 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
       break;
       case BIND_STRING: {
         db2Debug3("  param->bindType: BIND_STRING");
-        indicators[param_count] = (SQLLEN) ((param->value == NULL) ? SQL_NULL_DATA : SQL_NTS);
-        db2Debug2("  param_ind       : %d",indicators[param_count]);
+        indicators[param_index] = (SQLLEN) ((param->value == NULL) ? SQL_NULL_DATA : SQL_NTS);
+        db2Debug2("  param_ind       : %d",indicators[param_index]);
         rc = SQLBindParameter( session->stmtp->hsql
-                             , param->colnum+1
+                             , param_number
                              , SQL_PARAM_INPUT
                              , SQL_C_CHAR
                              , SQL_VARCHAR
@@ -138,16 +139,16 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
                              , 0
                              , (SQLPOINTER) param->value
                              , 0
-                             , &indicators[param_count]
+                             , &indicators[param_index]
                              );
       }
       break;
       case BIND_LONGRAW: {
         db2Debug3("  param->bindType: BIND_LONGRAW");
-        indicators[param_count] = (SQLLEN) ((param->value == NULL) ? SQL_NULL_DATA : SQL_NTS);
-        db2Debug2("  param_ind       : %d",indicators[param_count]);
+        indicators[param_index] = (SQLLEN) ((param->value == NULL) ? SQL_NULL_DATA : SQL_NTS);
+        db2Debug2("  param_ind       : %d",indicators[param_index]);
         rc = SQLBindParameter( session->stmtp->hsql
-                             , param->colnum+1
+                             , param_number
                              , SQL_PARAM_INPUT
                              , SQL_C_BINARY
                              , SQL_LONGVARBINARY
@@ -155,17 +156,17 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
                              , 0
                              , (SQLPOINTER) param->value
                              , 0
-                             , &indicators[param_count]
+                             , &indicators[param_index]
                              );
       }
       break;
       case BIND_LONG: {
         db2Debug3("  param->bindType: BIND_LONG");
-        indicators[param_count] = (SQLLEN) ((param->value == NULL) ? SQL_NULL_DATA : SQL_NTS);
-        db2Debug2("  param_ind       : %d",indicators[param_count]);
+        indicators[param_index] = (SQLLEN) ((param->value == NULL) ? SQL_NULL_DATA : SQL_NTS);
+        db2Debug2("  param_ind       : %d",indicators[param_index]);
         db2Debug2("  param->value    : '%s'",param->value);
         rc = SQLBindParameter( session->stmtp->hsql
-                             , param->colnum+1
+                             , param_number
                              , SQL_PARAM_INPUT
                              , SQL_C_CHAR
                              , SQL_LONGVARCHAR
@@ -173,7 +174,7 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
                              , 0
                              , (SQLPOINTER) param->value
                              , 0
-                             , &indicators[param_count]
+                             , &indicators[param_index]
                              );
       }
       break;
@@ -181,8 +182,8 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
         SQLSMALLINT fcType;
         SQLSMALLINT fParamType;
         db2Debug2("  param->bindType: BIND_OUTPUT");
-        indicators[param_count] = (SQLLEN) ((param->value == NULL) ? SQL_NULL_DATA : 0);
-        db2Debug2("  param_ind       : %d",indicators[param_count]);
+        indicators[param_index] = (SQLLEN) ((param->value == NULL) ? SQL_NULL_DATA : 0);
+        db2Debug2("  param_ind       : %d",indicators[param_index]);
         if (db2Table->cols[param->colnum]->pgtype == UUIDOID) {
           /* the type input function will interpret the string value correctly */
           fcType = SQL_CHAR;
@@ -191,7 +192,7 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
         }
         fParamType = param2c(fcType);
         rc = SQLBindParameter( session->stmtp->hsql
-                             , param_count
+                             , param_number
                              , SQL_PARAM_OUTPUT
                              , fParamType
                              , fcType
@@ -199,7 +200,7 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
                              , 0
                              , (SQLPOINTER) param->value
                              , db2Table->cols[param->colnum]->val_size
-                             , &indicators[param_count]
+                             , &indicators[param_index]
                              );
       }
       break;
@@ -209,6 +210,7 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
     if (rc != SQL_SUCCESS) {
       db2Error_d(FDW_UNABLE_TO_CREATE_EXECUTION, "error executing query: SQLBindParameter failed to bind parameter", db2Message);
     }
+    ++param_count;  /* Increment for next iteration */
   }
   /* execute the query and get the first result row */
   db2Debug2("  session->stmtp->hsql: %d",session->stmtp->hsql);
