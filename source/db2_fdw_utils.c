@@ -1336,6 +1336,10 @@ void convertTuple (DB2FdwState* fdw_state, Datum* values, bool* nulls, bool trun
           }
           value_len = i;
         }
+        /* Ensure null termination for CStringGetDatum - required for type conversion */
+        if (value != NULL && value_len < fdw_state->db2Table->cols[index]->val_size) {
+          value[value_len] = '\0';
+        }
         /* Use memchr with length limit to prevent reading past buffer end */
         tmp_value = memchr(value, ',', value_len);
         if(tmp_value != NULL) {
@@ -1361,6 +1365,10 @@ void convertTuple (DB2FdwState* fdw_state, Datum* values, bool* nulls, bool trun
             /* search for null terminator within buffer bounds */
           }
           value_len = i;
+        }
+        /* Ensure null termination for CStringGetDatum - required for type conversion */
+        if (value != NULL && value_len < fdw_state->db2Table->cols[index]->val_size) {
+          value[value_len] = '\0';
         }
       }
       break;

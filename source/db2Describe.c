@@ -238,7 +238,7 @@ DB2Table* db2Describe (DB2Session* session, char* schema, char* table, char* pgn
       case SQL_NUMERIC:
       case SQL_DECIMAL:
         if (scale == 0)
-          reply->cols[i - 1]->val_size = bin_size;
+          reply->cols[i - 1]->val_size = bin_size + 1;  /* +1 for null terminator */
         else
           reply->cols[i - 1]->val_size = (scale > colSize ? scale : colSize) + 5;
       break;
@@ -255,7 +255,7 @@ DB2Table* db2Describe (DB2Session* session, char* schema, char* table, char* pgn
         reply->cols[i - 1]->val_size = colSize + 1;
       break;
       case SQL_BIGINT:
-        reply->cols[i - 1]->val_size = 24;
+        reply->cols[i - 1]->val_size = 24 + 1;  /* +1 for null terminator */
       break;
       case SQL_XML:
         reply->cols[i - 1]->val_size = LOB_CHUNK_SIZE + 1;
