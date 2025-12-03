@@ -70,8 +70,9 @@ int db2ExecuteQuery (DB2Session* session, const DB2Table* db2Table, ParamDesc* p
         switch (colType){
           case SQL_SMALLINT:{
             char* end = NULL;
-            SQLSMALLINT sqlint = strtol(param->value,&end,10);
-            db2Debug2("  sqlint: %d",sqlint);
+            /* Store converted value in persistent ParamDesc storage, not on stack */
+            param->converted_value.smallint_val = strtol(param->value,&end,10);
+            db2Debug2("  sqlint: %d",param->converted_value.smallint_val);
             db2Debug2("  param->bindType: SQL_SMALLINT");
             rc = SQLBindParameter( session->stmtp->hsql
                                  , param_count
@@ -80,7 +81,7 @@ int db2ExecuteQuery (DB2Session* session, const DB2Table* db2Table, ParamDesc* p
                                  , colType
                                  , 0
                                  , 0
-                                 , &sqlint
+                                 , &param->converted_value.smallint_val
                                  , 0
                                  , &indicators[param_count]
                                  );
@@ -88,8 +89,9 @@ int db2ExecuteQuery (DB2Session* session, const DB2Table* db2Table, ParamDesc* p
           break;
           case SQL_INTEGER: {
             char* end = NULL;
-            SQLINTEGER sqlint = strtol(param->value,&end,10);
-            db2Debug2("  sqlint: %d",sqlint);
+            /* Store converted value in persistent ParamDesc storage, not on stack */
+            param->converted_value.integer_val = strtol(param->value,&end,10);
+            db2Debug2("  sqlint: %d",param->converted_value.integer_val);
             db2Debug2("  param->bindType: SQL_INTEGER");
             rc = SQLBindParameter( session->stmtp->hsql
                                  , param_count
@@ -98,26 +100,28 @@ int db2ExecuteQuery (DB2Session* session, const DB2Table* db2Table, ParamDesc* p
                                  , colType
                                  , 0
                                  , 0
-                                 , &sqlint
+                                 , &param->converted_value.integer_val
                                  , 0
                                  , &indicators[param_count]
                                  );
           }
           break;
           default: {
-            SQL_NUMERIC_STRUCT num = {0};
-            parse2num_struct(param->value, &num);
+            /* Store converted value in persistent ParamDesc storage, not on stack */
+            param->converted_value.numeric_val.precision = 0;
+            param->converted_value.numeric_val.scale = 0;
+            parse2num_struct(param->value, &param->converted_value.numeric_val);
             db2Debug2("  param->bindType: SQL_NUMERIC");
-            db2Debug2("  num: '%s'",num);
+            db2Debug2("  num: '%s'",param->converted_value.numeric_val);
             rc = SQLBindParameter( session->stmtp->hsql
                                  , param_count
                                  , SQL_PARAM_INPUT
                                  , SQL_C_NUMERIC
                                  , colType
-                                 , num.precision
-                                 , num.scale
-                                 , &num
-                                 , sizeof(num)
+                                 , param->converted_value.numeric_val.precision
+                                 , param->converted_value.numeric_val.scale
+                                 , &param->converted_value.numeric_val
+                                 , sizeof(param->converted_value.numeric_val)
                                  , &indicators[param_count]
                                  );
           }
