@@ -1319,7 +1319,23 @@ void convertTuple (DB2FdwState* fdw_state, Datum* values, bool* nulls, bool trun
         db2Debug3("  DB2_FLOAT, DECIMAL, SMALLINT, INTEGER, REAL, DECFLOAT, DOUBLE");
         value     = fdw_state->db2Table->cols[index]->val;
         value_len = fdw_state->db2Table->cols[index]->val_len;
-        value_len = (value_len == 0) ? strlen(value) : value_len;
+        /*
+         * CRITICAL FIX for issue #85: Safe length calculation to prevent buffer overrun
+         * If value_len is 0, we need to calculate it, but we must:
+         * 1. Check if value is NULL first (crash prevention)
+         * 2. Bound the search to allocated buffer size (corruption prevention)
+         * This code runs 100K+ times, so even small overruns accumulate into crashes
+         */
+        if (value == NULL) {
+          value_len = 0;
+        } else if (value_len == 0) {
+          size_t max_len = fdw_state->db2Table->cols[index]->val_size;
+          size_t i;
+          for (i = 0; i < max_len && value[i] != '\0'; i++) {
+            /* search for null terminator within buffer bounds */
+          }
+          value_len = i;
+        }
         tmp_value = value;
         if((tmp_value = strchr(value,','))!=NULL) {
           *tmp_value = '.';
@@ -1331,7 +1347,20 @@ void convertTuple (DB2FdwState* fdw_state, Datum* values, bool* nulls, bool trun
         /* for other data types, db2Table contains the results */
         value     = fdw_state->db2Table->cols[index]->val;
         value_len = fdw_state->db2Table->cols[index]->val_len;
-        value_len = (value_len == 0) ? strlen(value) : value_len;
+        /*
+         * CRITICAL FIX for issue #85: Safe length calculation to prevent buffer overrun
+         * Same fix as numeric types above - prevent strlen() from reading past buffer
+         */
+        if (value == NULL) {
+          value_len = 0;
+        } else if (value_len == 0) {
+          size_t max_len = fdw_state->db2Table->cols[index]->val_size;
+          size_t i;
+          for (i = 0; i < max_len && value[i] != '\0'; i++) {
+            /* search for null terminator within buffer bounds */
+          }
+          value_len = i;
+        }
       }
       break;
     }
