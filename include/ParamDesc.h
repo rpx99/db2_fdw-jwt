@@ -15,5 +15,12 @@ typedef struct paramDesc {
   int                 colnum;    // corresponding column in DB2Table (-1 in SELECT queries unless output column)
   int                 txts;      // transaction timestamp
   struct paramDesc*   next;      // next ParamDesc element in the list
+
+  // Persistent storage for converted numeric values to avoid stack deallocation issues
+  union {
+    SQLSMALLINT       smallint_val;
+    SQLINTEGER        integer_val;
+    SQL_NUMERIC_STRUCT numeric_val;
+  } converted_value;
 } ParamDesc;
 #endif
