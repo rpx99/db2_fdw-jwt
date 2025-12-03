@@ -1301,10 +1301,12 @@ void convertTuple (DB2FdwState* fdw_state, Datum* values, bool* nulls, bool trun
         db2Debug3("  DB2_LONGBINARY datatypes");
         /* for LONG and LONG RAW, the first 4 bytes contain the length */
         value_len = *((int32 *) fdw_state->db2Table->cols[index]->val);
-        /* the rest is the actual data */
-        value = fdw_state->db2Table->cols[index]->val;
-        /* terminating zero byte (needed for LONGs) */
-        value[value_len] = '\0';
+        /* the rest is the actual data (skip the 4-byte length header) */
+        value = fdw_state->db2Table->cols[index]->val + sizeof(int32);
+        /* terminating zero byte (needed for LONGs) - but check buffer size first */
+        if (value_len < fdw_state->db2Table->cols[index]->val_size - sizeof(int32)) {
+          value[value_len] = '\0';
+        }
       }
       break;
       case DB2_FLOAT:
