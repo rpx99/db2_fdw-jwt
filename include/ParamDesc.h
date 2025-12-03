@@ -1,9 +1,12 @@
 #ifndef PARAMDESC_H
 #define PARAMDESC_H
+
+#include <sqlcli1.h>
+
 /** ParamDesc
  *  The descriptor of one parameter in the query. It might be a parameter receiving a result from a selected column
  *  or a parameter used in any of the where clauses.
- * 
+ *
  *  @author Ing Wolfgang Brandl
  *  @since  1.0
  */
