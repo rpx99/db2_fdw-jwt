@@ -1336,8 +1336,9 @@ void convertTuple (DB2FdwState* fdw_state, Datum* values, bool* nulls, bool trun
           }
           value_len = i;
         }
-        tmp_value = value;
-        if((tmp_value = strchr(value,','))!=NULL) {
+        /* Use memchr with length limit to prevent reading past buffer end */
+        tmp_value = memchr(value, ',', value_len);
+        if(tmp_value != NULL) {
           *tmp_value = '.';
         }
       }

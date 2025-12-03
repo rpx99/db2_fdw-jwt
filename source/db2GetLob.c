@@ -69,8 +69,8 @@ void db2GetLob (DB2Session* session, DB2Column* column, int cidx, char** value, 
           db2Debug3("  not allocating space since the LOB value is apparently NULL");
         }
       } else {
-        // do not add another 0 termination byte, since we already have one
-        *value = db2realloc (*value, *value_len + extend);
+        /* Realloc with +1 for null terminator - CRITICAL: must have space for '\0' at end */
+        *value = db2realloc (*value, *value_len + extend + 1);
       }
       // append the buffer read to the value excluding 0 termination byte
       db2Debug2("  *value    : %x", *value);
