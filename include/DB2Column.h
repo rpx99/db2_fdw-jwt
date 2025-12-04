@@ -1,5 +1,8 @@
 #ifndef DB2COLUMN_H
 #define DB2COLUMN_H
+
+#include <sqlcli1.h>  /* Required for SQLLEN type used in val_null */
+
 /** DB2Column
  *  A full descriptor of a DB2 table column and its corresponding PG column.
  * 
@@ -25,7 +28,7 @@ typedef struct db2Column {
   char*               val;           // buffer for DB2 to return results in (LOB locator for LOBs)
   size_t              val_size;      // allocated size in val
   size_t              val_len;       // actual length of val
-  int                 val_null;      // indicator for NULL value
+  SQLLEN              val_null;      // indicator for NULL value - MUST be SQLLEN (8 bytes on 64-bit) for SQLBindCol!
   int                 varno;         // range table index of this column's relation
   db2NoEncErrType     noencerr;      // no encoding error produced
 } DB2Column;
