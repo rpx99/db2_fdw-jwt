@@ -312,15 +312,21 @@ pub struct PoolStats {
 /// This provides RAII-based connection management.
 /// The connection is automatically returned to the pool when dropped.
 pub struct PooledConnection<'pool> {
-    connection: Arc<Db2Connection>,
+    /// The connection (public for Arc cloning in session creation)
+    pub connection: Arc<Db2Connection>,
     key: ConnectionKey,
     pool: &'pool ConnectionPool,
 }
 
 impl<'pool> PooledConnection<'pool> {
     /// Get a reference to the underlying connection
-    pub fn connection(&self) -> &Db2Connection {
+    pub fn get(&self) -> &Db2Connection {
         &self.connection
+    }
+
+    /// Get an Arc clone of the connection
+    pub fn connection_arc(&self) -> Arc<Db2Connection> {
+        Arc::clone(&self.connection)
     }
 
     /// Get the connection key

@@ -147,25 +147,8 @@ impl Db2Error {
 /// Convert from odbc-api errors
 impl From<odbc_api::Error> for Db2Error {
     fn from(err: odbc_api::Error) -> Self {
-        match err {
-            odbc_api::Error::Diagnostics { record, function } => {
-                Db2Error::Odbc {
-                    sqlstate: String::from_utf8_lossy(&record.state).to_string(),
-                    native_error: record.native_error,
-                    message: format!("{}: {}", function, record.message),
-                }
-            }
-            odbc_api::Error::NoDiagnostics(function) => {
-                Db2Error::Internal(format!("ODBC function {} failed without diagnostics", function))
-            }
-            odbc_api::Error::AbortedConnectionStringCompletion => {
-                Db2Error::ConnectionFailed {
-                    server: String::new(),
-                    reason: "Connection string completion aborted".into(),
-                }
-            }
-            other => Db2Error::Internal(format!("ODBC error: {:?}", other)),
-        }
+        // Convert the error to a string representation since the API structure varies
+        Db2Error::Internal(format!("ODBC error: {}", err))
     }
 }
 

@@ -3,7 +3,6 @@
 //! This module provides safe handling for BLOB, CLOB, and DBCLOB types.
 //! It replaces the unsafe C implementation with proper memory management.
 
-use std::io::{Read, Write};
 use tracing::debug;
 
 use crate::error::{Db2Error, Db2Result};
@@ -45,11 +44,12 @@ impl Blob {
     ///
     /// If the LOB exceeds max_size, it will be truncated
     pub fn from_bytes_with_limit(data: Vec<u8>, max_size: usize) -> Self {
-        if data.len() > max_size {
+        let original_len = data.len();
+        if original_len > max_size {
             let mut truncated_data = data;
             truncated_data.truncate(max_size);
             Self {
-                original_size: Some(truncated_data.len() + (data.len() - max_size)),
+                original_size: Some(original_len),
                 data: truncated_data,
                 truncated: true,
             }
