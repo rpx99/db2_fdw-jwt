@@ -5,9 +5,15 @@ edition.workspace = true
 license.workspace = true
 description = "Safe ODBC wrapper for DB2 database connections"
 
+[features]
+default = []
+real_odbc = []  # Enable real ODBC connections (requires libodbc)
+
 [dependencies]
 odbc-api.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 rust_decimal.workspace = true
+parking_lot = "0.12"
+

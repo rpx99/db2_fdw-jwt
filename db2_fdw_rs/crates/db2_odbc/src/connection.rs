@@ -2,12 +2,22 @@
 //!
 //! This module provides safe connection handling with support for both
 //! traditional username/password authentication and JWT token authentication.
+//!
+//! # Implementation
+//!
+//! Uses the odbc-api crate for safe ODBC bindings. All memory is managed
+//! by Rust's ownership system - no manual cleanup required.
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use tracing::{debug, info, instrument};
+use std::sync::Arc;
+use parking_lot::Mutex;
+use tracing::{debug, info, warn, instrument};
+
+use odbc_api::{Connection, ConnectionOptions, Cursor, IntoParameter};
+use odbc_api::handles::StatementImpl;
 
 use crate::environment::Db2Environment;
-use crate::error::Db2Result;
+use crate::error::{Db2Error, Db2Result};
 
 /// Authentication method for DB2 connections
 #[derive(Debug, Clone)]
@@ -110,7 +120,7 @@ impl Db2ConnectionOptions {
     }
 
     /// Build the ODBC connection string
-    fn build_connection_string(&self) -> String {
+    pub fn build_connection_string(&self) -> String {
         let mut conn_str = format!("DSN={}", self.server);
 
         match &self.auth {
@@ -134,6 +144,11 @@ impl Db2ConnectionOptions {
     }
 }
 
+/// Inner connection state (wrapped in Arc<Mutex> for thread-safety)
+struct ConnectionInner<'env> {
+    connection: Connection<'env>,
+}
+
 /// Safe wrapper around an ODBC connection to DB2
 ///
 /// This replaces the C db2AllocConnHdl with a safe, RAII-based connection.
@@ -149,10 +164,12 @@ pub struct Db2Connection {
     read_only: bool,
     /// Connection string for reference
     connection_string: String,
+    /// The actual ODBC connection (None if using stubs)
+    #[cfg(feature = "real_odbc")]
+    inner: Option<Arc<Mutex<ConnectionInner<'static>>>>,
 }
 
-// SAFETY: We ensure that Db2Connection is only used from one thread at a time
-// in the pool implementation. The connection itself is protected by Arc.
+// SAFETY: We protect access to the connection through Arc<Mutex>
 unsafe impl Send for Db2Connection {}
 unsafe impl Sync for Db2Connection {}
 
@@ -171,23 +188,41 @@ impl Db2Connection {
 
         let conn_str = options.build_connection_string();
 
-        // In a full implementation, this would:
-        // 1. Get the ODBC environment from env
-        // 2. Call SQLDriverConnect with the connection string
-        // 3. Store the resulting connection handle
-        //
-        // For now, we create a stub that allows the code to compile
-        // and be tested for structure correctness.
+        #[cfg(feature = "real_odbc")]
+        {
+            // Real ODBC connection using odbc-api
+            let connection = env.inner()
+                .connect_with_connection_string(&conn_str, ConnectionOptions::default())
+                .map_err(|e| {
+                    warn!(connection_id = id, error = %e, "Connection failed");
+                    Db2Error::ConnectionFailed(e.to_string())
+                })?;
 
-        info!(connection_id = id, server = %options.server, "Connection initialized (stub)");
+            info!(connection_id = id, server = %options.server, "Connected to DB2");
 
-        Ok(Self {
-            id,
-            server: options.server.clone(),
-            xact_level: AtomicU32::new(0),
-            read_only: options.read_only,
-            connection_string: conn_str,
-        })
+            Ok(Self {
+                id,
+                server: options.server.clone(),
+                xact_level: AtomicU32::new(0),
+                read_only: options.read_only,
+                connection_string: conn_str,
+                inner: Some(Arc::new(Mutex::new(ConnectionInner { connection }))),
+            })
+        }
+
+        #[cfg(not(feature = "real_odbc"))]
+        {
+            // Stub mode for testing without ODBC
+            info!(connection_id = id, server = %options.server, "Connection initialized (stub mode)");
+
+            Ok(Self {
+                id,
+                server: options.server.clone(),
+                xact_level: AtomicU32::new(0),
+                read_only: options.read_only,
+                connection_string: conn_str,
+            })
+        }
     }
 
     /// Connect with password authentication (convenience method)
@@ -249,8 +284,13 @@ impl Db2Connection {
     #[instrument(skip(self), fields(connection_id = self.id))]
     pub fn commit(&self) -> Db2Result<()> {
         debug!("Committing transaction");
-        // Note: Real implementation would call SQLEndTran
-        // self.inner.commit()?;
+
+        #[cfg(feature = "real_odbc")]
+        if let Some(ref inner) = self.inner {
+            let guard = inner.lock();
+            guard.connection.commit().map_err(|e| Db2Error::QueryFailed(e.to_string()))?;
+        }
+
         Ok(())
     }
 
@@ -258,8 +298,13 @@ impl Db2Connection {
     #[instrument(skip(self), fields(connection_id = self.id))]
     pub fn rollback(&self) -> Db2Result<()> {
         debug!("Rolling back transaction");
-        // Note: Real implementation would call SQLEndTran
-        // self.inner.rollback()?;
+
+        #[cfg(feature = "real_odbc")]
+        if let Some(ref inner) = self.inner {
+            let guard = inner.lock();
+            guard.connection.rollback().map_err(|e| Db2Error::QueryFailed(e.to_string()))?;
+        }
+
         Ok(())
     }
 
@@ -290,11 +335,34 @@ impl Db2Connection {
     }
 
     /// Execute a SQL statement immediately (no result set)
-    fn execute_immediate(&self, sql: &str) -> Db2Result<()> {
+    pub fn execute_immediate(&self, sql: &str) -> Db2Result<()> {
         debug!(connection_id = self.id, sql = %sql, "Executing immediate");
-        // Real implementation would use the ODBC connection
-        // self.inner.execute(sql, ())?;
+
+        #[cfg(feature = "real_odbc")]
+        if let Some(ref inner) = self.inner {
+            let guard = inner.lock();
+            guard.connection
+                .execute(sql, ())
+                .map_err(|e| Db2Error::QueryFailed(e.to_string()))?;
+        }
+
         Ok(())
+    }
+
+    /// Execute a query and return results
+    #[cfg(feature = "real_odbc")]
+    pub fn execute_query<'a>(&'a self, sql: &str) -> Db2Result<Option<impl Cursor + 'a>> {
+        debug!(connection_id = self.id, sql = %sql, "Executing query");
+
+        if let Some(ref inner) = self.inner {
+            let guard = inner.lock();
+            let cursor = guard.connection
+                .execute(sql, ())
+                .map_err(|e| Db2Error::QueryFailed(e.to_string()))?;
+            Ok(cursor)
+        } else {
+            Err(Db2Error::NotConnected)
+        }
     }
 
     /// Get the connection string (for debugging)
@@ -304,7 +372,12 @@ impl Db2Connection {
 
     /// Check if the connection is still valid
     pub fn is_valid(&self) -> bool {
-        // Real implementation would ping the database
+        #[cfg(feature = "real_odbc")]
+        if let Some(ref inner) = self.inner {
+            let guard = inner.lock();
+            return guard.connection.is_dead().map(|dead| !dead).unwrap_or(false);
+        }
+
         true
     }
 }
