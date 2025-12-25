@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdio.h>
 #include <sqlcli1.h>
 #include <postgres_ext.h>
 #include "db2_fdw.h"
@@ -20,6 +21,7 @@ extern SQLRETURN    db2CheckErr          (SQLRETURN status, SQLHANDLE handle, SQ
 extern void         db2Error_d           (db2error sqlstate, const char* message, const char* detail, ...);
 extern SQLSMALLINT  param2c              (SQLSMALLINT fcType);
 extern void         parse2num_struct     (const char* s, SQL_NUMERIC_STRUCT* ns);
+extern char*        c2name               (short fcType);
 
 /** internal prototypes */
 int                 db2ExecuteInsert     (DB2Session* session, const DB2Table* db2Table, ParamDesc* paramList);
@@ -63,12 +65,29 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
         db2Debug3("  param->bindType: BIND_NUMBER");
         indicators[param_count] = (SQLLEN) ((param->value == NULL) ? SQL_NULL_DATA : 0);
         db2Debug2("  param_ind       : %d",indicators[param_count]);
+        db2Debug2("  colType         : %d - %s",db2Table->cols[param->colnum]->colType,c2name(db2Table->cols[param->colnum]->colType));
         switch (db2Table->cols[param->colnum]->colType){
+          case SQL_BIGINT:{
+            char* end = NULL;
+            SQLBIGINT sqlbint = strtoll(param->value,&end,10);
+            db2Debug2("  sqlbint: %d",sqlbint);
+            rc = SQLBindParameter( session->stmtp->hsql
+                                 , param_count
+                                 , SQL_PARAM_INPUT
+                                 , SQL_C_SBIGINT
+                                 , db2Table->cols[param->colnum]->colType
+                                 , 0
+                                 , 0
+                                 , &sqlbint
+                                 , 0
+                                 , &indicators[param_count]
+                                 );
+          }
+          break;
           case SQL_SMALLINT:{
             char* end = NULL;
             SQLSMALLINT sqlint = strtol(param->value,&end,10);
             db2Debug2("  sqlint: %d",sqlint);
-            db2Debug2("  param->bindType: SQL_SMALLINT");
             rc = SQLBindParameter( session->stmtp->hsql
                                  , param->colnum+1
                                  , SQL_PARAM_INPUT
@@ -86,7 +105,6 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
             char* end = NULL;
             SQLINTEGER sqlint = strtol(param->value,&end,10);
             db2Debug2("  sqlint: %d",sqlint);
-            db2Debug2("  param->bindType: SQL_INTEGER");
             rc = SQLBindParameter( session->stmtp->hsql
                                  , param->colnum+1
                                  , SQL_PARAM_INPUT
@@ -100,10 +118,14 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
                                  );
           }
           break;
-          default: {
+          case SQL_DECIMAL:
+          case SQL_NUMERIC:
+          case SQL_FLOAT:
+          case SQL_REAL:
+          case SQL_DOUBLE:
+          case SQL_DECFLOAT: {
             SQL_NUMERIC_STRUCT num = {0};
             parse2num_struct(param->value, &num);
-            db2Debug2("  param->bindType: SQL_NUMERIC");
             db2Debug2("  num: '%s'",num);
             rc = SQLBindParameter( session->stmtp->hsql
                                  , param->colnum+1
@@ -116,6 +138,14 @@ int db2ExecuteInsert (DB2Session* session, const DB2Table* db2Table, ParamDesc* 
                                  , sizeof(num)
                                  , &indicators[param_count]
                                  );
+          }
+          break;
+          default: {
+            snprintf(db2Message,ERRBUFSIZE,"unsupported sql number type: %d - %s"
+                    ,db2Table->cols[param->colnum]->colType
+                    ,c2name(db2Table->cols[param->colnum]->colType)
+                    ); 
+            db2Error_d(FDW_UNABLE_TO_CREATE_EXECUTION, "error executing isrt query: unable to bind parameter", db2Message);
           }
           break;
         }

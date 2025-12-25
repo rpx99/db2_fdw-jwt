@@ -245,6 +245,7 @@ List* db2PlanForeignModify (PlannerInfo* root, ModifyTable* plan, Index resultRe
         appendStringInfo (&sql, "%s = ", fdwState->db2Table->cols[i]->colName);
         appendAsType (&sql, fdwState->db2Table->cols[i]->pgtype);
       }
+      db2Debug2("  sql: '%s'",sql.data);
       /* throw a meaningful error if nothing is updated */
       if (firstcol)
         ereport (ERROR
@@ -487,7 +488,7 @@ List* serializePlanData (DB2FdwState* fdwState) {
   /* query */
   result = lappend (result, serializeString (fdwState->query));
   /* DB2 prefetch count */
-  result = lappend (result, serializeInt ((int) fdwState->prefetch));
+  result = lappend (result, serializeLong (fdwState->prefetch));
   /* DB2 table name */
   result = lappend (result, serializeString (fdwState->db2Table->name));
   /* PostgreSQL table name */
