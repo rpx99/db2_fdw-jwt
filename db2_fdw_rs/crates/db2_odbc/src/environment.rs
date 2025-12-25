@@ -3,12 +3,56 @@
 //! This module provides safe management of ODBC environments.
 //! It replaces the C implementation's manual environment handle allocation
 //! with RAII-based resource management.
+//!
+//! # Static Lifetime Solution
+//!
+//! ODBC connections in odbc-api have a lifetime tied to their Environment.
+//! To store connections in structures like `Arc<Mutex<>>`, we need `'static`
+//! lifetime. We achieve this by using `Box::leak()` to create a static
+//! Environment reference (acceptable since we only create one per backend).
 
 use odbc_api::Environment;
-use std::sync::Arc;
-use tracing::{debug, info, warn};
+use std::sync::{Arc, OnceLock};
+use tracing::{debug, info};
 
-use crate::error::{Db2Error, Db2Result};
+use crate::error::Db2Result;
+
+/// Global static environment - one per PostgreSQL backend process
+/// This is safe because PostgreSQL backends are single-process/single-threaded.
+static GLOBAL_ENV: OnceLock<&'static Environment> = OnceLock::new();
+
+/// Get the global static ODBC environment
+///
+/// Creates the environment on first call using Box::leak for 'static lifetime.
+/// Returns cached reference thereafter.
+///
+/// # Safety
+///
+/// This leaks memory intentionally - one Environment per PostgreSQL backend,
+/// lives for the entire backend lifetime. This is acceptable and safe.
+pub fn get_global_environment() -> Db2Result<&'static Environment> {
+    // Use get_or_init with a closure that returns the static reference
+    // We handle errors by returning a sentinel and checking
+    let env = GLOBAL_ENV.get_or_init(|| {
+        match Environment::new() {
+            Ok(env) => {
+                // Leak the environment to get 'static lifetime
+                // Safe: one per backend, lives for entire process
+                let boxed = Box::new(env);
+                let static_env: &'static Environment = Box::leak(boxed);
+                info!("Global ODBC environment initialized with 'static lifetime");
+                static_env
+            }
+            Err(e) => {
+                // This is a fatal error - can't recover without an environment
+                // In production, this would use elog(ERROR) to abort
+                panic!("Failed to allocate ODBC environment: {}", e);
+            }
+        }
+    });
+
+    Ok(*env)
+}
 
 /// Safe wrapper around ODBC Environment
 ///
@@ -16,11 +60,16 @@ use crate::error::{Db2Error, Db2Result};
 /// a safe interface for creating connections. Unlike the C implementation,
 /// it uses Rust's ownership system to guarantee proper cleanup.
 ///
+/// # Lifetime
+///
+/// This wrapper uses a reference to the global static environment, allowing
+/// connections created from it to have `'static` lifetime.
+///
 /// # Note
 ///
 /// PostgreSQL backends are single-threaded, so no thread-safety is needed.
 pub struct Db2Environment {
-    inner: Environment,
+    inner: &'static Environment,
     nls_lang: Option<String>,
 }
 
@@ -29,13 +78,14 @@ impl Db2Environment {
     ///
     /// This replaces the C db2AllocEnvHdl function but without the
     /// dangerous putenv() calls that could lead to use-after-free.
+    ///
+    /// Uses the global static environment to allow `'static` lifetime connections.
     pub fn new() -> Db2Result<Self> {
-        debug!("Allocating new ODBC environment");
+        debug!("Creating Db2Environment wrapper");
 
-        let inner = Environment::new()
-            .map_err(|e| Db2Error::EnvironmentAllocation(e.to_string()))?;
+        let inner = get_global_environment()?;
 
-        info!("ODBC environment allocated successfully");
+        info!("Db2Environment wrapper created successfully");
 
         Ok(Self {
             inner,
@@ -68,8 +118,10 @@ impl Db2Environment {
     }
 
     /// Get a reference to the inner ODBC environment
-    pub(crate) fn inner(&self) -> &Environment {
-        &self.inner
+    ///
+    /// Returns a `'static` reference, allowing connections to have `'static` lifetime.
+    pub(crate) fn inner(&self) -> &'static Environment {
+        self.inner
     }
 
     /// Get the ODBC driver manager version

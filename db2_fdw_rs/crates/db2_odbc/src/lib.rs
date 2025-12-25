@@ -11,7 +11,7 @@ pub mod types;
 pub mod error;
 pub mod lob;
 
-pub use environment::Db2Environment;
+pub use environment::{Db2Environment, get_global_environment};
 pub use connection::{Db2Connection, Db2ConnectionOptions, AuthMethod};
 pub use statement::{Db2Statement, PreparedStatement, ParamInfo, ColumnDesc, BatchInsert};
 pub use types::{Db2Value, Db2Type, SqlType};

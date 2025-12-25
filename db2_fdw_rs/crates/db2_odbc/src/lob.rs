@@ -322,7 +322,7 @@ impl LobReader {
     }
 
     /// Read a CLOB chunk by chunk
-    pub fn read_clob<F>(&mut self, mut read_chunk: F) -> Db2Result<Clob>
+    pub fn read_clob<F>(&mut self, read_chunk: F) -> Db2Result<Clob>
     where
         F: FnMut(&mut [u8]) -> Db2Result<Option<usize>>,
     {

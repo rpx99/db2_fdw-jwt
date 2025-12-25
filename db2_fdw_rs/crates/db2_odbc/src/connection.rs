@@ -13,7 +13,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tracing::{debug, info, warn, instrument};
 
-use odbc_api::{Connection, ConnectionOptions, Cursor, CursorImpl, IntoParameter};
+use odbc_api::{Connection, ConnectionOptions, CursorImpl};
 use odbc_api::handles::StatementImpl;
 
 use crate::environment::Db2Environment;
@@ -355,6 +355,8 @@ impl Db2Connection {
     /// Execute a query with a callback to process results
     ///
     /// This provides safe, scoped access to the cursor without lifetime issues.
+    /// The callback must process all results before returning, as the cursor
+    /// is tied to the connection guard's lifetime.
     #[cfg(feature = "real_odbc")]
     pub fn execute_query<F, R>(&self, sql: &str, f: F) -> Db2Result<R>
     where
@@ -364,11 +366,14 @@ impl Db2Connection {
 
         if let Some(ref inner) = self.inner {
             let guard = inner.lock();
-            match guard.connection.execute(sql, ()) {
-                Ok(Some(cursor)) => f(cursor),
-                Ok(None) => Err(Db2Error::StatementExecution("No result set returned".into())),
-                Err(e) => Err(Db2Error::StatementExecution(e.to_string())),
-            }
+            // Execute and process within the same scope to satisfy lifetimes
+            let result = guard.connection.execute(sql, ());
+            let cursor = match result {
+                Ok(Some(cursor)) => cursor,
+                Ok(None) => return Err(Db2Error::StatementExecution("No result set returned".into())),
+                Err(e) => return Err(Db2Error::StatementExecution(e.to_string())),
+            };
+            f(cursor)
         } else {
             Err(Db2Error::Internal("Not connected".into()))
         }
@@ -393,7 +398,9 @@ impl Db2Connection {
 
         if let Some(ref inner) = self.inner {
             let guard = inner.lock();
-            match guard.connection.execute(sql, ()) {
+            // Execute and handle result within the same scope
+            let result = guard.connection.execute(sql, ());
+            match result {
                 Ok(Some(_cursor)) => {
                     // For DML, the row count is returned via ODBC, but we can't easily access it
                     // from this cursor type. Return 0 for now.

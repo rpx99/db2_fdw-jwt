@@ -13,8 +13,6 @@ use crate::types::{Db2Type, Db2Value, SqlType};
 
 /// Default buffer size for string columns
 const DEFAULT_STRING_BUFFER: usize = 4096;
-/// Maximum buffer size to prevent memory issues
-const MAX_BUFFER_SIZE: usize = 1024 * 1024; // 1MB
 
 /// Parameter binding information
 #[derive(Debug, Clone)]
@@ -201,18 +199,12 @@ impl PreparedStatement {
                 odbc_api::DataType::Date => SqlType::Date,
                 odbc_api::DataType::Time { .. } => SqlType::Time,
                 odbc_api::DataType::Timestamp { .. } => SqlType::Timestamp,
-                odbc_api::DataType::Char { length } => {
-                    SqlType::Char
-                }
-                odbc_api::DataType::Varchar { length } => {
-                    SqlType::Varchar
-                }
-                odbc_api::DataType::LongVarchar { length } => {
-                    SqlType::LongVarchar
-                }
-                odbc_api::DataType::Binary { length } => SqlType::Binary,
-                odbc_api::DataType::Varbinary { length } => SqlType::VarBinary,
-                odbc_api::DataType::LongVarbinary { length } => SqlType::LongVarBinary,
+                odbc_api::DataType::Char { .. } => SqlType::Char,
+                odbc_api::DataType::Varchar { .. } => SqlType::Varchar,
+                odbc_api::DataType::LongVarchar { .. } => SqlType::LongVarchar,
+                odbc_api::DataType::Binary { .. } => SqlType::Binary,
+                odbc_api::DataType::Varbinary { .. } => SqlType::VarBinary,
+                odbc_api::DataType::LongVarbinary { .. } => SqlType::LongVarBinary,
                 _ => SqlType::Varchar, // Default to varchar for unknown types
             };
 
