@@ -5,8 +5,8 @@
 use std::sync::Arc;
 use tracing::{debug, instrument, warn};
 
-use db2_odbc::{Db2Connection, Db2Error, Db2Result, PreparedStatement, Db2Value};
-use crate::pool::{ConnectionPool, PooledConnection, GLOBAL_POOL};
+use db2_odbc::{Db2Connection, Db2Error, Db2Result, Db2Value};
+use crate::pool::get_connection;
 use crate::FdwConnectionOptions;
 
 /// Session state
@@ -31,7 +31,7 @@ pub enum SessionState {
 /// This is the safe replacement for the C HdlEntry/DB2ConnEntry combination.
 /// It provides RAII-based resource management for statements.
 pub struct Db2Session {
-    /// Pooled connection handle
+    /// Connection handle (from per-backend cache)
     connection: Arc<Db2Connection>,
     /// Current session state
     state: SessionState,
@@ -47,10 +47,10 @@ impl Db2Session {
     /// Create a new session from connection options
     #[instrument(skip(options), fields(server = %options.server))]
     pub fn new(options: &FdwConnectionOptions) -> Db2Result<Self> {
-        let pooled = GLOBAL_POOL.get_or_create(options)?;
+        let connection = get_connection(options)?;
 
         Ok(Self {
-            connection: Arc::clone(&pooled.connection),
+            connection,
             state: SessionState::Ready,
             current_sql: None,
             prefetch: options.prefetch,
@@ -58,10 +58,10 @@ impl Db2Session {
         })
     }
 
-    /// Create a session from an existing pooled connection
-    pub fn from_pooled(connection: PooledConnection<'_>, prefetch: usize) -> Self {
+    /// Create a session from an existing connection
+    pub fn from_connection(connection: Arc<Db2Connection>, prefetch: usize) -> Self {
         Self {
-            connection: Arc::clone(&connection.connection),
+            connection,
             state: SessionState::Ready,
             current_sql: None,
             prefetch,
@@ -211,7 +211,7 @@ impl Drop for Db2Session {
         if self.state != SessionState::Closed {
             debug!("Session dropped without explicit close");
             // Cursor cleanup happens automatically
-            // Connection remains in pool for reuse
+            // Connection remains in cache for reuse
         }
     }
 }

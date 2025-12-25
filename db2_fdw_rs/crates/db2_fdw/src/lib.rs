@@ -10,6 +10,11 @@
 //! - No dangling pointers (RAII-based resource management)
 //! - No buffer overflows (safe string handling)
 //! - No use-after-free (compile-time lifetime checking)
+//!
+//! # Threading Model
+//!
+//! PostgreSQL uses a multi-process architecture. Each backend is single-threaded,
+//! so we use thread_local! + RefCell instead of thread-safe structures.
 
 use pgrx::prelude::*;
 
@@ -21,8 +26,7 @@ pub mod import;
 pub mod transaction;
 pub mod state;
 
-use db2_connection::{ConnectionPool, GLOBAL_POOL};
-use once_cell::sync::Lazy;
+use db2_connection::{close_all_connections, get_cache_stats};
 
 // PostgreSQL extension magic
 pg_module_magic!();
@@ -131,7 +135,7 @@ fn db2_fdw_validator(options: Vec<String>, catalog: pg_sys::Oid) {
 
 /// Close all DB2 connections
 ///
-/// Utility function to close all cached connections.
+/// Utility function to close all cached connections in this backend.
 /// Replaces the C db2_close_connections function.
 #[pg_extern(sql = "
 CREATE OR REPLACE FUNCTION db2_close_connections()
@@ -141,7 +145,7 @@ LANGUAGE C STRICT;
 ")]
 fn db2_close_connections() {
     pgrx::log!("Closing all DB2 connections");
-    GLOBAL_POOL.close_all();
+    close_all_connections();
 }
 
 /// Diagnostic function
@@ -155,13 +159,11 @@ AS 'MODULE_PATHNAME', 'db2_diag'
 LANGUAGE C STRICT;
 ")]
 fn db2_diag() -> TableIterator<'static, (name!(name, String), name!(value, String))> {
-    let stats = GLOBAL_POOL.stats();
+    let stats = get_cache_stats();
 
     let diagnostics = vec![
         ("version".to_string(), VERSION.to_string()),
         ("extension_name".to_string(), EXTENSION_NAME.to_string()),
-        ("rust_version".to_string(), env!("CARGO_PKG_RUST_VERSION").to_string()),
-        ("build_date".to_string(), env!("CARGO_PKG_VERSION").to_string()),
         ("connection_count".to_string(), stats.connection_count.to_string()),
         ("environment_count".to_string(), stats.environment_count.to_string()),
         ("total_use_count".to_string(), stats.total_use_count.to_string()),
