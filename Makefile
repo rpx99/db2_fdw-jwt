@@ -71,14 +71,41 @@ DOCS         = $(wildcard doc/*.md)
 TESTS        = $(wildcard test/sql/*.sql)
 REGRESS      = $(patsubst test/sql/%.sql,%,$(TESTS))
 REGRESS_OPTS = --inputdir=test
+
+#
+# Rust Core Library (optional, for memory-safe operations)
+# Set USE_RUST_CORE=1 to enable linking with libdb2_fdw_core
+#
+# Build the Rust library first:
+#   cd db2_fdw_core && cargo build --release
+#
+RUST_CORE_DIR = db2_fdw_core
+RUST_LIB_DIR  = $(RUST_CORE_DIR)/target/release
+
+ifdef USE_RUST_CORE
+RUST_CPPFLAGS = -DUSE_RUST_CORE -I$(RUST_CORE_DIR)/include
+RUST_LDFLAGS  = -L$(RUST_LIB_DIR) -ldb2_fdw_core -Wl,-rpath,$(RUST_LIB_DIR)
+else
+RUST_CPPFLAGS =
+RUST_LDFLAGS  =
+endif
+
 #
 # Uncoment the MODULES line if you are adding C files
 # to your extention.
 #
 #MODULES      = $(patsubst %.c,%,$(wildcard src/*.c))
-PG_CPPFLAGS  = -g -fPIC -I$(DB2_HOME)/include -I./include
-SHLIB_LINK   = -fPIC -L$(DB2_HOME)/lib64 -L$(DB2_HOME)/bin  -ldb2
+PG_CPPFLAGS  = -g -fPIC -I$(DB2_HOME)/include -I./include $(RUST_CPPFLAGS)
+SHLIB_LINK   = -fPIC -L$(DB2_HOME)/lib64 -L$(DB2_HOME)/bin -ldb2 $(RUST_LDFLAGS)
 PG_CONFIG   ?= pg_config
+
+# Build Rust library before C extension (when USE_RUST_CORE is set)
+ifdef USE_RUST_CORE
+rust-core:
+	cd $(RUST_CORE_DIR) && cargo build --release
+
+all: rust-core
+endif
 
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
