@@ -1,0 +1,38 @@
+[package]
+name = "db2_fdw_core"
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+description = "Safe Rust core for DB2 FDW - replaces crash-prone C code"
+
+[lib]
+name = "db2_fdw_core"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+# ODBC
+odbc-api = "8"
+
+# Concurrency
+dashmap = "6"
+parking_lot = "0.12"
+once_cell = "1.19"
+
+# Error handling
+thiserror = "1"
+
+# Logging (optional, can be disabled)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+
+# FFI helpers
+libc = "0.2"
+
+[features]
+default = []
+logging = ["tracing-subscriber"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"  # No unwinding across FFI boundary!
