@@ -1,12 +1,33 @@
-//! Connection pool and session management for DB2 FDW
+//! Connection cache and session management for DB2 FDW
 //!
-//! This crate provides thread-safe connection pooling and session management,
+//! This crate provides per-backend connection caching and session management,
 //! replacing the unsafe doubly-linked list implementation in C.
+//!
+//! ## PostgreSQL Threading Model
+//!
+//! PostgreSQL uses a **multi-process** architecture, NOT multi-threaded.
+//! Each backend (client connection) runs in its own process with a single thread.
+//! Therefore:
+//! - No thread-safe data structures (DashMap, Mutex) are needed
+//! - We use `thread_local!` + `RefCell<HashMap>` for state
+//! - Connection cache is per-backend, not global across connections
+//!
+//! ## Memory Model
+//!
+//! - **Rust Heap**: Used for ODBC buffers, LOB data, internal state
+//! - **PostgreSQL palloc**: Used for data returned to PostgreSQL (via pgrx)
+//!
+//! When data needs to go to PostgreSQL, pgrx handles the conversion from
+//! Rust types to PostgreSQL Datums in the appropriate memory context.
 
 pub mod pool;
 pub mod session;
 
-pub use pool::{ConnectionPool, ConnectionKey, PooledConnection, GLOBAL_POOL};
+pub use pool::{
+    get_connection, close_all_connections, close_server_connections,
+    cleanup_stale_connections, get_cache_stats,
+    ConnectionCache, ConnectionKey, CacheStats,
+};
 pub use session::{Db2Session, SessionState};
 
 use db2_odbc::{AuthMethod, Db2ConnectionOptions};

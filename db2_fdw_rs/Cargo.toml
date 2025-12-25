@@ -26,10 +26,8 @@ odbc-api = "8.1"
 thiserror = "2.0"
 anyhow = "1.0"
 
-# Concurrency
-dashmap = "6.0"
-parking_lot = "0.12"
-once_cell = "1.19"
+# Note: PostgreSQL backends are single-threaded, so no thread-safe
+# data structures (DashMap, Mutex) are needed. We use RefCell + HashMap.
 
 # Logging
 tracing = "0.1"

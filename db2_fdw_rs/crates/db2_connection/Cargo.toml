@@ -9,6 +9,3 @@ description = "Connection pool and session management for DB2 FDW"
 db2_odbc = { path = "../db2_odbc" }
 thiserror.workspace = true
 tracing.workspace = true
-dashmap.workspace = true
-parking_lot.workspace = true
-once_cell.workspace = true

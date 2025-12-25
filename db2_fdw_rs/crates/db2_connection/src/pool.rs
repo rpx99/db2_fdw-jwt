@@ -1,11 +1,19 @@
-//! Thread-safe connection pooling
+//! Per-backend connection caching
 //!
 //! This module replaces the unsafe doubly-linked list in the C implementation
-//! with a lock-free concurrent HashMap for connection caching.
+//! with a simple HashMap for connection caching.
+//!
+//! ## Important: PostgreSQL Threading Model
+//!
+//! PostgreSQL uses a **multi-process** architecture, NOT multi-threaded.
+//! Each backend (client connection) runs in its own process with a single thread.
+//! Therefore:
+//! - No thread-safe data structures (DashMap, Mutex) are needed
+//! - RefCell provides interior mutability safely in single-threaded context
+//! - The connection cache is per-backend, not global across connections
 
-use dashmap::DashMap;
-use once_cell::sync::Lazy;
-use parking_lot::RwLock;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn, instrument};
@@ -13,12 +21,13 @@ use tracing::{debug, info, warn, instrument};
 use db2_odbc::{Db2Connection, Db2Environment, Db2Error, Db2Result};
 use crate::FdwConnectionOptions;
 
-/// Global connection pool instance
+/// Per-backend connection cache
 ///
 /// This is the safe replacement for the C globals `rootenvEntry` and `rootconnEntry`.
-/// Using DashMap provides thread-safe concurrent access without the dangling pointer
-/// issues of the C implementation.
-pub static GLOBAL_POOL: Lazy<ConnectionPool> = Lazy::new(ConnectionPool::new);
+/// Uses RefCell because PostgreSQL backends are single-threaded.
+thread_local! {
+    static CONNECTION_CACHE: RefCell<ConnectionCache> = RefCell::new(ConnectionCache::new());
+}
 
 /// Key for connection lookup
 ///
@@ -50,7 +59,7 @@ impl ConnectionKey {
     }
 }
 
-/// Statistics for a pooled connection
+/// Statistics for a cached connection
 #[derive(Debug)]
 struct ConnectionStats {
     /// When the connection was created
@@ -72,76 +81,75 @@ impl Default for ConnectionStats {
     }
 }
 
-/// A connection entry in the pool
-struct PoolEntry {
+/// A connection entry in the cache
+struct CacheEntry {
     /// The actual connection
     connection: Arc<Db2Connection>,
     /// Usage statistics
-    stats: RwLock<ConnectionStats>,
+    stats: ConnectionStats,
 }
 
-impl PoolEntry {
+impl CacheEntry {
     fn new(connection: Db2Connection) -> Self {
         Self {
             connection: Arc::new(connection),
-            stats: RwLock::new(ConnectionStats::default()),
+            stats: ConnectionStats::default(),
         }
     }
 
-    fn touch(&self) {
-        let mut stats = self.stats.write();
-        stats.last_used = Instant::now();
-        stats.use_count += 1;
+    fn touch(&mut self) {
+        self.stats.last_used = Instant::now();
+        self.stats.use_count += 1;
     }
 
     fn age(&self) -> Duration {
-        self.stats.read().created_at.elapsed()
+        self.stats.created_at.elapsed()
     }
 
     fn idle_time(&self) -> Duration {
-        self.stats.read().last_used.elapsed()
+        self.stats.last_used.elapsed()
     }
 
     fn use_count(&self) -> u64 {
-        self.stats.read().use_count
+        self.stats.use_count
     }
 }
 
-/// Thread-safe connection pool
+/// Per-backend connection cache
 ///
-/// This replaces the C implementation's doubly-linked lists with a concurrent HashMap.
+/// This replaces the C implementation's doubly-linked lists with a simple HashMap.
 /// Benefits:
 /// - No dangling pointers
 /// - No use-after-free bugs
-/// - Thread-safe without explicit locking in most operations
+/// - Simple, correct implementation for single-threaded context
 /// - Automatic cleanup on drop
-pub struct ConnectionPool {
+pub struct ConnectionCache {
     /// Environment cache (by NLS setting)
-    environments: DashMap<Option<String>, Arc<Db2Environment>>,
+    environments: HashMap<Option<String>, Arc<Db2Environment>>,
     /// Connection cache
-    connections: DashMap<ConnectionKey, PoolEntry>,
+    connections: HashMap<ConnectionKey, CacheEntry>,
     /// Maximum idle time before connection is closed
     max_idle_time: Duration,
     /// Maximum connection age
     max_age: Duration,
 }
 
-impl ConnectionPool {
-    /// Create a new connection pool
+impl ConnectionCache {
+    /// Create a new connection cache
     pub fn new() -> Self {
         Self {
-            environments: DashMap::new(),
-            connections: DashMap::new(),
+            environments: HashMap::new(),
+            connections: HashMap::new(),
             max_idle_time: Duration::from_secs(300), // 5 minutes
             max_age: Duration::from_secs(3600),      // 1 hour
         }
     }
 
-    /// Create a pool with custom timeouts
+    /// Create a cache with custom timeouts
     pub fn with_timeouts(max_idle_time: Duration, max_age: Duration) -> Self {
         Self {
-            environments: DashMap::new(),
-            connections: DashMap::new(),
+            environments: HashMap::new(),
+            connections: HashMap::new(),
             max_idle_time,
             max_age,
         }
@@ -149,13 +157,13 @@ impl ConnectionPool {
 
     /// Get or create an environment for the given NLS setting
     fn get_or_create_environment(
-        &self,
+        &mut self,
         nls_lang: Option<&str>,
     ) -> Db2Result<Arc<Db2Environment>> {
         let key = nls_lang.map(String::from);
 
         if let Some(env) = self.environments.get(&key) {
-            return Ok(Arc::clone(&env));
+            return Ok(Arc::clone(env));
         }
 
         // Create new environment
@@ -176,13 +184,13 @@ impl ConnectionPool {
     /// This is the safe replacement for the C db2GetSession function.
     #[instrument(skip(self, options), fields(server = %options.server))]
     pub fn get_or_create(
-        &self,
+        &mut self,
         options: &FdwConnectionOptions,
-    ) -> Db2Result<PooledConnection> {
+    ) -> Db2Result<Arc<Db2Connection>> {
         let key = ConnectionKey::from_options(options);
 
         // Check for existing valid connection
-        if let Some(entry) = self.connections.get(&key) {
+        if let Some(entry) = self.connections.get_mut(&key) {
             // Validate connection is still good
             if entry.connection.is_valid()
                 && entry.idle_time() < self.max_idle_time
@@ -192,23 +200,17 @@ impl ConnectionPool {
                 debug!(
                     server = %options.server,
                     use_count = entry.use_count(),
-                    "Reusing pooled connection"
+                    "Reusing cached connection"
                 );
-                return Ok(PooledConnection {
-                    connection: Arc::clone(&entry.connection),
-                    key: key.clone(),
-                    pool: self,
-                });
+                return Ok(Arc::clone(&entry.connection));
             } else {
-                // Connection is stale, remove it
+                // Connection is stale, will be replaced below
                 debug!(
                     server = %options.server,
                     idle_time = ?entry.idle_time(),
                     age = ?entry.age(),
                     "Removing stale connection"
                 );
-                drop(entry);
-                self.connections.remove(&key);
             }
         }
 
@@ -219,24 +221,20 @@ impl ConnectionPool {
         let odbc_options = options.to_odbc_options();
         let connection = Db2Connection::connect(&env, &odbc_options)?;
 
-        let entry = PoolEntry::new(connection);
+        let mut entry = CacheEntry::new(connection);
         entry.touch();
 
         let conn = Arc::clone(&entry.connection);
-        self.connections.insert(key.clone(), entry);
+        self.connections.insert(key, entry);
 
-        Ok(PooledConnection {
-            connection: conn,
-            key,
-            pool: self,
-        })
+        Ok(conn)
     }
 
     /// Close all connections
     ///
     /// This is the safe replacement for db2CloseConnections.
     #[instrument(skip(self))]
-    pub fn close_all(&self) {
+    pub fn close_all(&mut self) {
         info!(
             connection_count = self.connections.len(),
             "Closing all connections"
@@ -247,14 +245,14 @@ impl ConnectionPool {
     }
 
     /// Close connections to a specific server
-    pub fn close_server(&self, server: &str) {
+    pub fn close_server(&mut self, server: &str) {
         info!(server = %server, "Closing connections to server");
 
         self.connections.retain(|key, _| key.server != server);
     }
 
     /// Remove stale connections
-    pub fn cleanup_stale(&self) {
+    pub fn cleanup_stale(&mut self) {
         let before = self.connections.len();
 
         self.connections.retain(|_key, entry| {
@@ -279,95 +277,74 @@ impl ConnectionPool {
         }
     }
 
-    /// Get pool statistics
-    pub fn stats(&self) -> PoolStats {
-        PoolStats {
+    /// Get cache statistics
+    pub fn stats(&self) -> CacheStats {
+        CacheStats {
             environment_count: self.environments.len(),
             connection_count: self.connections.len(),
             total_use_count: self
                 .connections
-                .iter()
+                .values()
                 .map(|e| e.use_count())
                 .sum(),
         }
     }
 }
 
-impl Default for ConnectionPool {
+impl Default for ConnectionCache {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Pool statistics
+/// Cache statistics
 #[derive(Debug, Clone)]
-pub struct PoolStats {
+pub struct CacheStats {
     pub environment_count: usize,
     pub connection_count: usize,
     pub total_use_count: u64,
 }
 
-/// A connection borrowed from the pool
+// =============================================================================
+// Public API - Thread-local access functions
+// =============================================================================
+
+/// Get or create a connection (thread-local access)
 ///
-/// This provides RAII-based connection management.
-/// The connection is automatically returned to the pool when dropped.
-pub struct PooledConnection<'pool> {
-    /// The connection (public for Arc cloning in session creation)
-    pub connection: Arc<Db2Connection>,
-    key: ConnectionKey,
-    pool: &'pool ConnectionPool,
+/// This provides a clean API while using thread-local storage internally.
+pub fn get_connection(options: &FdwConnectionOptions) -> Db2Result<Arc<Db2Connection>> {
+    CONNECTION_CACHE.with(|cache| {
+        cache.borrow_mut().get_or_create(options)
+    })
 }
 
-impl<'pool> PooledConnection<'pool> {
-    /// Get a reference to the underlying connection
-    pub fn get(&self) -> &Db2Connection {
-        &self.connection
-    }
-
-    /// Get an Arc clone of the connection
-    pub fn connection_arc(&self) -> Arc<Db2Connection> {
-        Arc::clone(&self.connection)
-    }
-
-    /// Get the connection key
-    pub fn key(&self) -> &ConnectionKey {
-        &self.key
-    }
-
-    /// Explicitly close this connection and remove from pool
-    pub fn close(self) {
-        info!(server = %self.key.server, "Explicitly closing connection");
-        self.pool.connections.remove(&self.key);
-        // Connection will be dropped when Arc count goes to 0
-    }
-
-    /// Mark the connection as invalid (will be recreated on next use)
-    pub fn invalidate(self) {
-        warn!(server = %self.key.server, "Invalidating connection");
-        self.pool.connections.remove(&self.key);
-    }
+/// Close all cached connections (thread-local access)
+pub fn close_all_connections() {
+    CONNECTION_CACHE.with(|cache| {
+        cache.borrow_mut().close_all()
+    })
 }
 
-impl<'pool> std::ops::Deref for PooledConnection<'pool> {
-    type Target = Db2Connection;
-
-    fn deref(&self) -> &Self::Target {
-        &self.connection
-    }
+/// Close connections to a specific server (thread-local access)
+pub fn close_server_connections(server: &str) {
+    CONNECTION_CACHE.with(|cache| {
+        cache.borrow_mut().close_server(server)
+    })
 }
 
-impl<'pool> std::fmt::Debug for PooledConnection<'pool> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PooledConnection")
-            .field("key", &self.key)
-            .field("connection", &self.connection)
-            .finish()
-    }
+/// Cleanup stale connections (thread-local access)
+pub fn cleanup_stale_connections() {
+    CONNECTION_CACHE.with(|cache| {
+        cache.borrow_mut().cleanup_stale()
+    })
 }
 
-// Note: PooledConnection doesn't return to pool on drop because
-// the Arc<Db2Connection> is stored in the pool entry itself.
-// This means connections persist until explicitly closed or cleaned up.
+/// Get cache statistics (thread-local access)
+pub fn get_cache_stats() -> CacheStats {
+    CONNECTION_CACHE.with(|cache| {
+        cache.borrow().stats()
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -390,10 +367,10 @@ mod tests {
     }
 
     #[test]
-    fn test_pool_creation() {
-        let pool = ConnectionPool::new();
-        assert_eq!(pool.stats().connection_count, 0);
-        assert_eq!(pool.stats().environment_count, 0);
+    fn test_cache_creation() {
+        let cache = ConnectionCache::new();
+        assert_eq!(cache.stats().connection_count, 0);
+        assert_eq!(cache.stats().environment_count, 0);
     }
 
     #[test]

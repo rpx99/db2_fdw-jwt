@@ -16,9 +16,9 @@ use crate::error::{Db2Error, Db2Result};
 /// a safe interface for creating connections. Unlike the C implementation,
 /// it uses Rust's ownership system to guarantee proper cleanup.
 ///
-/// # Thread Safety
+/// # Note
 ///
-/// Db2Environment is thread-safe and can be shared across threads via Arc.
+/// PostgreSQL backends are single-threaded, so no thread-safety is needed.
 pub struct Db2Environment {
     inner: Environment,
     nls_lang: Option<String>,

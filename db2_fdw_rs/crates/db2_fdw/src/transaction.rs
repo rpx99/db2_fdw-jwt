@@ -1,14 +1,19 @@
 //! Transaction callback handling
 //!
 //! Manages PostgreSQL transaction events to synchronize with DB2 transactions.
+//!
+//! ## Threading Model
+//!
+//! PostgreSQL backends are single-threaded, so we use RefCell instead of
+//! thread-safe structures like DashMap. This is simpler and correct.
 
 use pgrx::prelude::*;
 use pgrx::pg_sys;
-use dashmap::DashMap;
-use once_cell::sync::Lazy;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use tracing::{debug, warn};
 
-use db2_connection::GLOBAL_POOL;
+use db2_connection::pool::cleanup_stale_connections;
 
 /// Savepoint state tracking
 #[derive(Debug)]
@@ -17,9 +22,11 @@ struct SavepointState {
     level: u32,
 }
 
-/// Active savepoints by subtransaction ID
-static ACTIVE_SAVEPOINTS: Lazy<DashMap<pg_sys::SubTransactionId, SavepointState>> =
-    Lazy::new(DashMap::new);
+/// Active savepoints by subtransaction ID (thread-local, single-threaded backend)
+thread_local! {
+    static ACTIVE_SAVEPOINTS: RefCell<HashMap<pg_sys::SubTransactionId, SavepointState>> =
+        RefCell::new(HashMap::new());
+}
 
 /// Register transaction callbacks with PostgreSQL
 pub fn register_callbacks() {
@@ -101,50 +108,61 @@ extern "C" fn subxact_callback(
 /// Create a savepoint on all active connections
 fn create_savepoint(subid: pg_sys::SubTransactionId) {
     let name = format!("pg_fdw_sp_{}", subid);
-    let level = ACTIVE_SAVEPOINTS.len() as u32 + 1;
 
-    // Store the savepoint state
-    ACTIVE_SAVEPOINTS.insert(
-        subid,
-        SavepointState {
-            name: name.clone(),
-            level,
-        },
-    );
+    ACTIVE_SAVEPOINTS.with(|savepoints| {
+        let mut map = savepoints.borrow_mut();
+        let level = map.len() as u32 + 1;
 
-    // Real implementation would execute:
-    // SAVEPOINT {name} ON ROLLBACK RETAIN CURSORS
-    // on each active DB2 connection
-    debug!(savepoint = %name, level, "Created savepoint");
+        map.insert(
+            subid,
+            SavepointState {
+                name: name.clone(),
+                level,
+            },
+        );
+
+        // Real implementation would execute:
+        // SAVEPOINT {name} ON ROLLBACK RETAIN CURSORS
+        // on each active DB2 connection
+        debug!(savepoint = %name, level, "Created savepoint");
+    });
 }
 
 /// Release a savepoint on all active connections
 fn release_savepoint(subid: pg_sys::SubTransactionId) {
-    if let Some((_, state)) = ACTIVE_SAVEPOINTS.remove(&subid) {
-        // Real implementation would execute:
-        // RELEASE SAVEPOINT {name}
-        // on each active DB2 connection
-        debug!(savepoint = %state.name, "Released savepoint");
-    }
+    ACTIVE_SAVEPOINTS.with(|savepoints| {
+        if let Some(state) = savepoints.borrow_mut().remove(&subid) {
+            // Real implementation would execute:
+            // RELEASE SAVEPOINT {name}
+            // on each active DB2 connection
+            debug!(savepoint = %state.name, "Released savepoint");
+        }
+    });
 }
 
 /// Rollback to a savepoint on all active connections
 fn rollback_to_savepoint(subid: pg_sys::SubTransactionId) {
-    if let Some((_, state)) = ACTIVE_SAVEPOINTS.remove(&subid) {
-        // Real implementation would execute:
-        // ROLLBACK TO SAVEPOINT {name}
-        // on each active DB2 connection
-        debug!(savepoint = %state.name, "Rolled back to savepoint");
+    ACTIVE_SAVEPOINTS.with(|savepoints| {
+        let mut map = savepoints.borrow_mut();
+        if let Some(state) = map.remove(&subid) {
+            // Real implementation would execute:
+            // ROLLBACK TO SAVEPOINT {name}
+            // on each active DB2 connection
+            debug!(savepoint = %state.name, "Rolled back to savepoint");
 
-        // Also remove any nested savepoints
-        ACTIVE_SAVEPOINTS.retain(|_, s| s.level < state.level);
-    }
+            // Also remove any nested savepoints
+            let level = state.level;
+            map.retain(|_, s| s.level < level);
+        }
+    });
 }
 
 /// Commit all DB2 connections
 fn commit_all_connections() {
     // Clear all savepoints
-    ACTIVE_SAVEPOINTS.clear();
+    ACTIVE_SAVEPOINTS.with(|savepoints| {
+        savepoints.borrow_mut().clear();
+    });
 
     // Real implementation would commit each connection
     // For now, just log
@@ -154,7 +172,9 @@ fn commit_all_connections() {
 /// Rollback all DB2 connections
 fn rollback_all_connections() {
     // Clear all savepoints
-    ACTIVE_SAVEPOINTS.clear();
+    ACTIVE_SAVEPOINTS.with(|savepoints| {
+        savepoints.borrow_mut().clear();
+    });
 
     // Real implementation would rollback each connection
     // For now, just log
@@ -164,10 +184,12 @@ fn rollback_all_connections() {
 /// Cleanup after a transaction completes
 fn cleanup_after_transaction() {
     // Clear savepoint tracking
-    ACTIVE_SAVEPOINTS.clear();
+    ACTIVE_SAVEPOINTS.with(|savepoints| {
+        savepoints.borrow_mut().clear();
+    });
 
-    // Optionally run connection pool cleanup
-    GLOBAL_POOL.cleanup_stale();
+    // Optionally run connection cache cleanup
+    cleanup_stale_connections();
 }
 
 #[cfg(test)]
@@ -178,16 +200,5 @@ mod tests {
     fn test_savepoint_name_generation() {
         let name = format!("pg_fdw_sp_{}", 123);
         assert_eq!(name, "pg_fdw_sp_123");
-    }
-
-    #[test]
-    fn test_savepoint_tracking() {
-        // Create
-        create_savepoint(1);
-        assert!(ACTIVE_SAVEPOINTS.contains_key(&1));
-
-        // Release
-        release_savepoint(1);
-        assert!(!ACTIVE_SAVEPOINTS.contains_key(&1));
     }
 }

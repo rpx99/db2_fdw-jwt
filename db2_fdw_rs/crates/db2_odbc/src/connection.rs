@@ -144,7 +144,7 @@ impl Db2ConnectionOptions {
     }
 }
 
-/// Inner connection state (wrapped in Arc<Mutex> for thread-safety)
+/// Inner connection state
 struct ConnectionInner<'env> {
     connection: Connection<'env>,
 }

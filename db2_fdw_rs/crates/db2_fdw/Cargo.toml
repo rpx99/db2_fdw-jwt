@@ -24,7 +24,5 @@ db2_query = { path = "../db2_query" }
 pgrx.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-once_cell.workspace = true
-dashmap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
