@@ -1,11 +1,13 @@
 //! Session management for DB2 FDW
 //!
 //! A session represents an active query execution context with statement handles.
+//! This is the safe replacement for the C HdlEntry/DB2ConnEntry combination.
 
 use std::sync::Arc;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
-use db2_odbc::{Db2Connection, Db2Error, Db2Result, Db2Value};
+use db2_odbc::{Db2Connection, Db2Error, Db2Result, Db2Value, PreparedStatement, SqlType};
+use db2_odbc::statement::ParamInfo;
 use crate::pool::get_connection;
 use crate::FdwConnectionOptions;
 
@@ -35,8 +37,8 @@ pub struct Db2Session {
     connection: Arc<Db2Connection>,
     /// Current session state
     state: SessionState,
-    /// Current SQL query (if any)
-    current_sql: Option<String>,
+    /// Current prepared statement (if any)
+    statement: Option<PreparedStatement>,
     /// Prefetch row count
     prefetch: usize,
     /// Transaction savepoint counter
@@ -52,7 +54,7 @@ impl Db2Session {
         Ok(Self {
             connection,
             state: SessionState::Ready,
-            current_sql: None,
+            statement: None,
             prefetch: options.prefetch,
             savepoint_counter: 0,
         })
@@ -63,7 +65,7 @@ impl Db2Session {
         Self {
             connection,
             state: SessionState::Ready,
-            current_sql: None,
+            statement: None,
             prefetch,
             savepoint_counter: 0,
         }
@@ -76,7 +78,7 @@ impl Db2Session {
 
     /// Get the current SQL query
     pub fn current_sql(&self) -> Option<&str> {
-        self.current_sql.as_deref()
+        self.statement.as_ref().map(|s| s.sql())
     }
 
     /// Get the prefetch size
@@ -87,6 +89,9 @@ impl Db2Session {
     /// Set the prefetch size
     pub fn set_prefetch(&mut self, prefetch: usize) {
         self.prefetch = prefetch;
+        if let Some(ref mut stmt) = self.statement {
+            stmt.set_prefetch(prefetch);
+        }
     }
 
     /// Get the connection reference
@@ -107,10 +112,17 @@ impl Db2Session {
         }
 
         debug!("Preparing query");
-        self.current_sql = Some(sql.to_string());
+
+        // Close any existing statement
+        self.statement = None;
+
+        // Create new prepared statement
+        let mut stmt = PreparedStatement::prepare(&self.connection, sql)?;
+        stmt.set_prefetch(self.prefetch);
+
+        self.statement = Some(stmt);
         self.state = SessionState::Prepared;
 
-        // Real implementation would prepare the statement
         Ok(())
     }
 
@@ -126,8 +138,22 @@ impl Db2Session {
         debug!(param_count = params.len(), "Executing query");
         self.state = SessionState::Executing;
 
-        // Real implementation would bind params and execute
+        // Convert Db2Values to ParamInfos
+        let param_infos: Vec<ParamInfo> = params
+            .iter()
+            .enumerate()
+            .map(|(i, v)| ParamInfo::new((i + 1) as u16, v.sql_type(), v.clone()))
+            .collect();
+
+        // Execute with the connection
+        if let Some(ref mut stmt) = self.statement {
+            stmt.execute_with_connection(&self.connection, &param_infos)?;
+        } else {
+            return Err(Db2Error::Internal("No statement prepared".into()));
+        }
+
         self.state = SessionState::Fetching;
+        info!("Query executed successfully");
         Ok(())
     }
 
@@ -148,16 +174,58 @@ impl Db2Session {
             return Err(Db2Error::Internal("Not in fetching state".into()));
         }
 
-        // Real implementation would fetch from ODBC
-        Ok(None)
+        if let Some(ref mut stmt) = self.statement {
+            let row = stmt.fetch_next()?;
+            if row.is_none() {
+                debug!("End of result set reached");
+            }
+            Ok(row)
+        } else {
+            Err(Db2Error::Internal("No statement available".into()))
+        }
+    }
+
+    /// Fetch all remaining rows
+    pub fn fetch_all(&mut self) -> Db2Result<Vec<Vec<Db2Value>>> {
+        if self.state != SessionState::Fetching {
+            return Err(Db2Error::Internal("Not in fetching state".into()));
+        }
+
+        if let Some(ref mut stmt) = self.statement {
+            stmt.fetch_all()
+        } else {
+            Err(Db2Error::Internal("No statement available".into()))
+        }
+    }
+
+    /// Get column count
+    pub fn column_count(&self) -> usize {
+        self.statement.as_ref().map(|s| s.column_count()).unwrap_or(0)
+    }
+
+    /// Get column descriptions
+    pub fn columns(&self) -> &[db2_odbc::statement::ColumnDesc] {
+        static EMPTY: &[db2_odbc::statement::ColumnDesc] = &[];
+        self.statement.as_ref().map(|s| s.columns()).unwrap_or(EMPTY)
+    }
+
+    /// Get row count (for DML)
+    pub fn row_count(&self) -> Db2Result<i64> {
+        if let Some(ref stmt) = self.statement {
+            stmt.row_count()
+        } else {
+            Ok(0)
+        }
     }
 
     /// Close the current cursor (allows new query)
     pub fn close_cursor(&mut self) -> Db2Result<()> {
-        if self.state == SessionState::Fetching {
+        if self.state == SessionState::Fetching || self.state == SessionState::Prepared {
             debug!("Closing cursor");
+            if let Some(ref mut stmt) = self.statement {
+                stmt.close_cursor()?;
+            }
             self.state = SessionState::Ready;
-            self.current_sql = None;
         }
         Ok(())
     }
@@ -166,7 +234,9 @@ impl Db2Session {
     pub fn cancel(&mut self) -> Db2Result<()> {
         if self.state == SessionState::Executing || self.state == SessionState::Fetching {
             debug!("Cancelling current operation");
-            // Real implementation would call SQLCancel
+            if let Some(ref stmt) = self.statement {
+                stmt.cancel()?;
+            }
             self.state = SessionState::Ready;
         }
         Ok(())
@@ -190,19 +260,34 @@ impl Db2Session {
         self.connection.rollback_to_savepoint(name)
     }
 
+    /// Commit the current transaction
+    pub fn commit(&self) -> Db2Result<()> {
+        self.connection.commit()
+    }
+
+    /// Rollback the current transaction
+    pub fn rollback(&self) -> Db2Result<()> {
+        self.connection.rollback()
+    }
+
     /// Reset the session for reuse
     pub fn reset(&mut self) -> Db2Result<()> {
         self.close_cursor()?;
+        self.statement = None;
         self.state = SessionState::Ready;
-        self.current_sql = None;
         Ok(())
     }
 
     /// Close the session
     pub fn close(&mut self) {
         debug!("Closing session");
+        self.statement = None;
         self.state = SessionState::Closed;
-        self.current_sql = None;
+    }
+
+    /// Check if cursor is at end
+    pub fn is_eof(&self) -> bool {
+        self.statement.as_ref().map(|s| s.is_eof()).unwrap_or(true)
     }
 }
 
@@ -210,7 +295,7 @@ impl Drop for Db2Session {
     fn drop(&mut self) {
         if self.state != SessionState::Closed {
             debug!("Session dropped without explicit close");
-            // Cursor cleanup happens automatically
+            // Statement cleanup happens automatically
             // Connection remains in cache for reuse
         }
     }
@@ -270,7 +355,6 @@ mod tests {
 
     #[test]
     fn test_session_state_transitions() {
-        // We can't create a real session without ODBC, but we can test the state machine
         let state = SessionState::Ready;
         assert_eq!(state, SessionState::Ready);
     }

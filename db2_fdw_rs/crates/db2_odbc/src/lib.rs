@@ -13,7 +13,7 @@ pub mod lob;
 
 pub use environment::Db2Environment;
 pub use connection::{Db2Connection, Db2ConnectionOptions, AuthMethod};
-pub use statement::{Db2Statement, PreparedStatement};
+pub use statement::{Db2Statement, PreparedStatement, ParamInfo, ColumnDesc, BatchInsert};
 pub use types::{Db2Value, Db2Type, SqlType};
 pub use error::{Db2Error, Db2Result};
 pub use lob::{Blob, Clob};

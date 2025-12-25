@@ -7,7 +7,9 @@ description = "Safe ODBC wrapper for DB2 database connections"
 
 [features]
 default = []
-real_odbc = []  # Enable real ODBC connections (requires libodbc)
+# Enable real ODBC connections - requires libodbc and fixes for Connection<'env> lifetimes
+# TODO: Restructure to use owned connections or Arc<Environment>
+real_odbc = []
 
 [dependencies]
 odbc-api.workspace = true

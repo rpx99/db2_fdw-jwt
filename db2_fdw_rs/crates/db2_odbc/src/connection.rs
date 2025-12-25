@@ -13,7 +13,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tracing::{debug, info, warn, instrument};
 
-use odbc_api::{Connection, ConnectionOptions, Cursor, IntoParameter};
+use odbc_api::{Connection, ConnectionOptions, Cursor, CursorImpl, IntoParameter};
 use odbc_api::handles::StatementImpl;
 
 use crate::environment::Db2Environment;
@@ -195,7 +195,10 @@ impl Db2Connection {
                 .connect_with_connection_string(&conn_str, ConnectionOptions::default())
                 .map_err(|e| {
                     warn!(connection_id = id, error = %e, "Connection failed");
-                    Db2Error::ConnectionFailed(e.to_string())
+                    Db2Error::ConnectionFailed {
+                        server: options.server.clone(),
+                        reason: e.to_string(),
+                    }
                 })?;
 
             info!(connection_id = id, server = %options.server, "Connected to DB2");
@@ -288,7 +291,7 @@ impl Db2Connection {
         #[cfg(feature = "real_odbc")]
         if let Some(ref inner) = self.inner {
             let guard = inner.lock();
-            guard.connection.commit().map_err(|e| Db2Error::QueryFailed(e.to_string()))?;
+            guard.connection.commit().map_err(|e| Db2Error::TransactionError(e.to_string()))?;
         }
 
         Ok(())
@@ -302,7 +305,7 @@ impl Db2Connection {
         #[cfg(feature = "real_odbc")]
         if let Some(ref inner) = self.inner {
             let guard = inner.lock();
-            guard.connection.rollback().map_err(|e| Db2Error::QueryFailed(e.to_string()))?;
+            guard.connection.rollback().map_err(|e| Db2Error::TransactionError(e.to_string()))?;
         }
 
         Ok(())
@@ -343,26 +346,79 @@ impl Db2Connection {
             let guard = inner.lock();
             guard.connection
                 .execute(sql, ())
-                .map_err(|e| Db2Error::QueryFailed(e.to_string()))?;
+                .map_err(|e| Db2Error::StatementExecution(e.to_string()))?;
         }
 
         Ok(())
     }
 
-    /// Execute a query and return results
+    /// Execute a query with a callback to process results
+    ///
+    /// This provides safe, scoped access to the cursor without lifetime issues.
     #[cfg(feature = "real_odbc")]
-    pub fn execute_query<'a>(&'a self, sql: &str) -> Db2Result<Option<impl Cursor + 'a>> {
+    pub fn execute_query<F, R>(&self, sql: &str, f: F) -> Db2Result<R>
+    where
+        F: FnOnce(CursorImpl<StatementImpl<'_>>) -> Db2Result<R>,
+    {
         debug!(connection_id = self.id, sql = %sql, "Executing query");
 
         if let Some(ref inner) = self.inner {
             let guard = inner.lock();
-            let cursor = guard.connection
-                .execute(sql, ())
-                .map_err(|e| Db2Error::QueryFailed(e.to_string()))?;
-            Ok(cursor)
+            match guard.connection.execute(sql, ()) {
+                Ok(Some(cursor)) => f(cursor),
+                Ok(None) => Err(Db2Error::StatementExecution("No result set returned".into())),
+                Err(e) => Err(Db2Error::StatementExecution(e.to_string())),
+            }
         } else {
-            Err(Db2Error::NotConnected)
+            Err(Db2Error::Internal("Not connected".into()))
         }
+    }
+
+    /// Execute a query (stub mode - always returns error)
+    #[cfg(not(feature = "real_odbc"))]
+    pub fn execute_query<F, R>(&self, _sql: &str, _f: F) -> Db2Result<R>
+    where
+        F: FnOnce(()) -> Db2Result<R>,
+    {
+        Err(Db2Error::Internal("Not connected (stub mode)".into()))
+    }
+
+    /// Execute an update statement (INSERT, UPDATE, DELETE) with row count callback
+    #[cfg(feature = "real_odbc")]
+    pub fn execute_update<F>(&self, sql: &str, f: F) -> Db2Result<()>
+    where
+        F: FnOnce(i64) -> Db2Result<()>,
+    {
+        debug!(connection_id = self.id, sql = %sql, "Executing update");
+
+        if let Some(ref inner) = self.inner {
+            let guard = inner.lock();
+            match guard.connection.execute(sql, ()) {
+                Ok(Some(_cursor)) => {
+                    // For DML, the row count is returned via ODBC, but we can't easily access it
+                    // from this cursor type. Return 0 for now.
+                    // TODO: Use preallocated statement to get affected row count
+                    f(0)
+                }
+                Ok(None) => {
+                    // No cursor returned, assume success with 0 rows
+                    f(0)
+                }
+                Err(e) => Err(Db2Error::StatementExecution(e.to_string())),
+            }
+        } else {
+            Err(Db2Error::Internal("Not connected".into()))
+        }
+    }
+
+    /// Execute an update statement (stub mode)
+    #[cfg(not(feature = "real_odbc"))]
+    pub fn execute_update<F>(&self, _sql: &str, f: F) -> Db2Result<()>
+    where
+        F: FnOnce(i64) -> Db2Result<()>,
+    {
+        debug!(connection_id = self.id, "Update in stub mode");
+        f(0)
     }
 
     /// Get the connection string (for debugging)
