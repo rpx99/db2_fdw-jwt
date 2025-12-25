@@ -1,0 +1,30 @@
+[package]
+name = "db2_fdw"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DB2 Foreign Data Wrapper for PostgreSQL"
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = ["pg16"]
+pg12 = ["pgrx/pg12"]
+pg13 = ["pgrx/pg13"]
+pg14 = ["pgrx/pg14"]
+pg15 = ["pgrx/pg15"]
+pg16 = ["pgrx/pg16"]
+pg17 = ["pgrx/pg17"]
+
+[dependencies]
+db2_odbc = { path = "../db2_odbc" }
+db2_connection = { path = "../db2_connection" }
+db2_query = { path = "../db2_query" }
+pgrx.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+once_cell.workspace = true
+dashmap.workspace = true
+serde.workspace = true
+serde_json.workspace = true

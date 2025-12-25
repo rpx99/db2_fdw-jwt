@@ -1,0 +1,14 @@
+[package]
+name = "db2_query"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Query processing and SQL generation for DB2 FDW"
+
+[dependencies]
+db2_odbc = { path = "../db2_odbc" }
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+rust_decimal.workspace = true
+pgrx.workspace = true

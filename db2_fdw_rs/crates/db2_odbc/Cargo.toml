@@ -1,0 +1,13 @@
+[package]
+name = "db2_odbc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Safe ODBC wrapper for DB2 database connections"
+
+[dependencies]
+odbc-api.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+rust_decimal.workspace = true
