@@ -573,7 +573,7 @@ pub extern "C" fn exec_foreign_batch_insert(
 #[pg_guard]
 pub extern "C" fn exec_foreign_truncate(
     rels: *mut pg_sys::List,
-    behavior: pg_sys::DropBehavior,
+    _behavior: pg_sys::DropBehavior,
 ) {
     debug!("exec_foreign_truncate called");
 
@@ -585,6 +585,10 @@ pub extern "C" fn exec_foreign_truncate(
         // Iterate through the list of relations
         let list_len = (*rels).length;
         debug!("TRUNCATE: processing {} relations", list_len);
+
+        // We need to collect connection info from the first relation
+        // All relations in a TRUNCATE must be from the same server
+        let mut session: Option<db2_connection::Db2Session> = None;
 
         for i in 0..list_len {
             // Get relation from list
@@ -598,35 +602,212 @@ pub extern "C" fn exec_foreign_truncate(
                 continue;
             }
 
+            let relid = (*rel).rd_id;
+
             // Get table name
             let relname = std::ffi::CStr::from_ptr((*(*rel).rd_rel).relname.data.as_ptr())
                 .to_string_lossy()
                 .to_string();
 
-            // Build options
-            let mut options = FdwOptions::new();
-            options.table = Some(relname.clone());
+            // Get foreign table options
+            let ft = pg_sys::GetForeignTable(relid);
+            if ft.is_null() {
+                warn!("Could not get foreign table for TRUNCATE");
+                continue;
+            }
 
-            // Build TRUNCATE SQL
-            let sql = if let Some(qb) = QueryBuilder::from_options(&options) {
-                qb.build_truncate()
+            // Get server
+            let server = pg_sys::GetForeignServer((*ft).serverid);
+            if server.is_null() {
+                warn!("Could not get foreign server for TRUNCATE");
+                continue;
+            }
+
+            // Parse options to get schema
+            let mut schema: Option<String> = None;
+            let mut table: Option<String> = None;
+            let ft_options = (*ft).options;
+
+            if !ft_options.is_null() {
+                let opt_len = (*ft_options).length;
+                for j in 0..opt_len {
+                    let opt_cell = pg_sys::list_nth_cell(ft_options, j);
+                    if opt_cell.is_null() {
+                        continue;
+                    }
+
+                    let def = (*opt_cell).ptr_value as *mut pg_sys::DefElem;
+                    if def.is_null() || (*def).defname.is_null() {
+                        continue;
+                    }
+
+                    let defname = std::ffi::CStr::from_ptr((*def).defname)
+                        .to_string_lossy()
+                        .to_lowercase();
+
+                    let defval = if (*def).arg.is_null() {
+                        String::new()
+                    } else {
+                        let val = (*def).arg as *mut pg_sys::String;
+                        if !val.is_null() && !(*val).sval.is_null() {
+                            std::ffi::CStr::from_ptr((*val).sval)
+                                .to_string_lossy()
+                                .to_string()
+                        } else {
+                            String::new()
+                        }
+                    };
+
+                    match defname.as_str() {
+                        "schema" => schema = Some(defval),
+                        "table" => table = Some(defval),
+                        _ => {}
+                    }
+                }
+            }
+
+            // Use table option if available, otherwise relation name
+            let actual_table = table.unwrap_or_else(|| relname.clone());
+
+            // Build qualified table name
+            let qualified_name = if let Some(ref s) = schema {
+                format!("\"{}\".\"{}\"", s.replace('"', "\"\""), actual_table.replace('"', "\"\""))
             } else {
-                format!("TRUNCATE TABLE \"{}\" IMMEDIATE", relname)
+                format!("\"{}\"", actual_table.replace('"', "\"\""))
             };
+
+            // Build TRUNCATE SQL (DB2 uses TRUNCATE TABLE ... IMMEDIATE)
+            let sql = format!("TRUNCATE TABLE {} IMMEDIATE", qualified_name);
 
             debug!(sql = %sql, "Executing TRUNCATE");
 
-            // Execute TRUNCATE
-            // Note: This requires a session - in practice, we'd need to establish one
-            // For now, log the SQL that would be executed
-            info!("Would execute: {}", sql);
+            // Initialize session if not already done
+            if session.is_none() {
+                // Get connection options from server
+                let mut dbserver: Option<String> = None;
+                let mut user: Option<String> = None;
+                let mut password: Option<String> = None;
 
-            // TODO: Execute via session when proper option parsing is available
-            // let conn_opts = options.to_connection_options();
-            // if let Some(opts) = conn_opts {
-            //     let session = Db2Session::new(&opts);
-            //     session.connection().execute_immediate(&sql);
-            // }
+                let server_options = (*server).options;
+                if !server_options.is_null() {
+                    let opt_len = (*server_options).length;
+                    for j in 0..opt_len {
+                        let opt_cell = pg_sys::list_nth_cell(server_options, j);
+                        if opt_cell.is_null() {
+                            continue;
+                        }
+
+                        let def = (*opt_cell).ptr_value as *mut pg_sys::DefElem;
+                        if def.is_null() || (*def).defname.is_null() {
+                            continue;
+                        }
+
+                        let defname = std::ffi::CStr::from_ptr((*def).defname)
+                            .to_string_lossy()
+                            .to_lowercase();
+
+                        let defval = if (*def).arg.is_null() {
+                            String::new()
+                        } else {
+                            let val = (*def).arg as *mut pg_sys::String;
+                            if !val.is_null() && !(*val).sval.is_null() {
+                                std::ffi::CStr::from_ptr((*val).sval)
+                                    .to_string_lossy()
+                                    .to_string()
+                            } else {
+                                String::new()
+                            }
+                        };
+
+                        match defname.as_str() {
+                            "dbserver" => dbserver = Some(defval),
+                            "user" => user = Some(defval),
+                            "password" => password = Some(defval),
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Try to get user mapping options
+                let user_id = pg_sys::GetUserId();
+                let mapping = pg_sys::GetUserMapping(user_id, (*ft).serverid);
+                if !mapping.is_null() {
+                    let mapping_options = (*mapping).options;
+                    if !mapping_options.is_null() {
+                        let opt_len = (*mapping_options).length;
+                        for j in 0..opt_len {
+                            let opt_cell = pg_sys::list_nth_cell(mapping_options, j);
+                            if opt_cell.is_null() {
+                                continue;
+                            }
+
+                            let def = (*opt_cell).ptr_value as *mut pg_sys::DefElem;
+                            if def.is_null() || (*def).defname.is_null() {
+                                continue;
+                            }
+
+                            let defname = std::ffi::CStr::from_ptr((*def).defname)
+                                .to_string_lossy()
+                                .to_lowercase();
+
+                            let defval = if (*def).arg.is_null() {
+                                String::new()
+                            } else {
+                                let val = (*def).arg as *mut pg_sys::String;
+                                if !val.is_null() && !(*val).sval.is_null() {
+                                    std::ffi::CStr::from_ptr((*val).sval)
+                                        .to_string_lossy()
+                                        .to_string()
+                                } else {
+                                    String::new()
+                                }
+                            };
+
+                            match defname.as_str() {
+                                "user" => user = Some(defval),
+                                "password" => password = Some(defval),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+
+                // Connect if we have connection info
+                if let Some(ref conn_str) = dbserver {
+                    match db2_connection::Db2Session::new(
+                        conn_str,
+                        user.as_deref(),
+                        password.as_deref(),
+                    ) {
+                        Ok(s) => {
+                            session = Some(s);
+                            info!("Connected to DB2 for TRUNCATE");
+                        }
+                        Err(e) => {
+                            pgrx::error!("Failed to connect to DB2 for TRUNCATE: {}", e);
+                        }
+                    }
+                } else {
+                    pgrx::error!("No dbserver option found for TRUNCATE");
+                }
+            }
+
+            // Execute TRUNCATE
+            if let Some(ref sess) = session {
+                match sess.connection().execute_immediate(&sql) {
+                    Ok(_) => {
+                        info!("TRUNCATE executed successfully: {}", sql);
+                    }
+                    Err(e) => {
+                        pgrx::error!("TRUNCATE failed: {}", e);
+                    }
+                }
+            }
+        }
+
+        // Close session
+        if let Some(mut sess) = session {
+            sess.close();
         }
     }
 }

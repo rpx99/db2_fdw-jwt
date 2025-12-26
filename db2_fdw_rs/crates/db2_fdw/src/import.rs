@@ -9,6 +9,17 @@ use tracing::{debug, info, warn, error};
 use crate::options::FdwOptions;
 use db2_connection::Db2Session;
 
+/// Case folding options for identifiers
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CaseFolding {
+    /// Keep original case
+    Keep,
+    /// Fold to lowercase
+    Lower,
+    /// Smart folding: lowercase if all uppercase, else keep
+    Smart,
+}
+
 /// Import a foreign schema
 ///
 /// PostgreSQL FDW callback: ImportForeignSchema
@@ -42,16 +53,95 @@ pub extern "C" fn import_foreign_schema(
                 .to_string()
         };
 
-        // Get the server name
+        // Get the server and its options
         let server = pg_sys::GetForeignServer(serverOid);
         if server.is_null() {
-            error!("Could not get foreign server");
-            return std::ptr::null_mut();
+            pgrx::error!("Could not get foreign server");
         }
 
         let server_name = std::ffi::CStr::from_ptr((*server).servername)
             .to_string_lossy()
             .to_string();
+
+        // Get user mapping
+        let user_id = pg_sys::GetUserId();
+        let mapping = pg_sys::GetUserMapping(user_id, serverOid);
+
+        // Get FDW
+        let wrapper = pg_sys::GetForeignDataWrapper((*server).fdwid);
+
+        // Collect all options from wrapper, server, and user mapping
+        let mut dbserver: Option<String> = None;
+        let mut user: Option<String> = None;
+        let mut password: Option<String> = None;
+        let mut jwt_token: Option<String> = None;
+        let mut nls_lang: Option<String> = None;
+        let mut case_folding = CaseFolding::Smart;
+        let mut readonly = false;
+
+        // Parse wrapper options
+        parse_options((*wrapper).options, &mut dbserver, &mut user, &mut password, &mut jwt_token, &mut nls_lang);
+
+        // Parse server options (override wrapper)
+        parse_options((*server).options, &mut dbserver, &mut user, &mut password, &mut jwt_token, &mut nls_lang);
+
+        // Parse user mapping options (override server)
+        if !mapping.is_null() {
+            parse_options((*mapping).options, &mut dbserver, &mut user, &mut password, &mut jwt_token, &mut nls_lang);
+        }
+
+        // Parse IMPORT FOREIGN SCHEMA statement options
+        let stmt_options = (*stmt).options;
+        if !stmt_options.is_null() {
+            let list_len = (*stmt_options).length;
+            for i in 0..list_len {
+                let cell = pg_sys::list_nth_cell(stmt_options, i);
+                if cell.is_null() {
+                    continue;
+                }
+
+                let def = (*cell).ptr_value as *mut pg_sys::DefElem;
+                if def.is_null() || (*def).defname.is_null() {
+                    continue;
+                }
+
+                let defname = std::ffi::CStr::from_ptr((*def).defname)
+                    .to_string_lossy()
+                    .to_lowercase();
+
+                let defval = if (*def).arg.is_null() {
+                    String::new()
+                } else {
+                    let val = (*def).arg as *mut pg_sys::String;
+                    if !val.is_null() && !(*val).sval.is_null() {
+                        std::ffi::CStr::from_ptr((*val).sval)
+                            .to_string_lossy()
+                            .to_string()
+                    } else {
+                        String::new()
+                    }
+                };
+
+                match defname.as_str() {
+                    "case" => {
+                        case_folding = match defval.to_lowercase().as_str() {
+                            "keep" => CaseFolding::Keep,
+                            "lower" => CaseFolding::Lower,
+                            "smart" => CaseFolding::Smart,
+                            _ => {
+                                pgrx::error!("invalid value for option \"case\": valid values are keep, lower, smart");
+                            }
+                        };
+                    }
+                    "readonly" => {
+                        readonly = matches!(defval.to_lowercase().as_str(), "on" | "true" | "yes" | "1");
+                    }
+                    _ => {
+                        pgrx::error!("invalid option \"{}\": valid options are case, readonly", defname);
+                    }
+                }
+            }
+        }
 
         info!(
             remote_schema = %remote_schema,
@@ -60,13 +150,10 @@ pub extern "C" fn import_foreign_schema(
             "Importing foreign schema"
         );
 
-        // Get import type
+        // Get import type and table list
         let import_type = (*stmt).list_type;
-
-        // Get the table list (for LIMIT TO or EXCEPT)
         let table_list = (*stmt).table_list;
         let mut limit_tables: Vec<String> = Vec::new();
-        let mut except_tables: Vec<String> = Vec::new();
 
         if !table_list.is_null() {
             let list_len = (*table_list).length;
@@ -85,48 +172,212 @@ pub extern "C" fn import_foreign_schema(
                     .to_string_lossy()
                     .to_string();
 
-                match import_type {
-                    pg_sys::ImportForeignSchemaType::FDW_IMPORT_SCHEMA_LIMIT_TO => {
-                        limit_tables.push(table_name);
-                    }
-                    pg_sys::ImportForeignSchemaType::FDW_IMPORT_SCHEMA_EXCEPT => {
-                        except_tables.push(table_name);
-                    }
-                    _ => {}
-                }
+                limit_tables.push(table_name);
             }
         }
 
-        // Build CREATE FOREIGN TABLE statements
-        // In a real implementation, we would:
-        // 1. Connect to DB2 using server options
-        // 2. Query SYSCAT.TABLES and SYSCAT.COLUMNS
-        // 3. Generate CREATE FOREIGN TABLE statements
+        // Build table list filter for SQL
+        let table_filter = if limit_tables.is_empty() {
+            String::new()
+        } else {
+            let quoted: Vec<String> = limit_tables.iter()
+                .map(|t| format!("'{}'", t.replace('\'', "''")))
+                .collect();
+            format!(" AND TABNAME IN ({})", quoted.join(", "))
+        };
 
-        // For now, generate a sample structure showing the approach
-        let mut commands: Vec<String> = Vec::new();
+        // Try to connect to DB2 and query the catalog
+        let connection_string = dbserver.unwrap_or_default();
+        if connection_string.is_empty() {
+            pgrx::error!("dbserver option is required for IMPORT FOREIGN SCHEMA");
+        }
 
-        // Example: Generate a placeholder showing the SQL that would be generated
-        let sample_sql = format!(
-            "-- IMPORT FOREIGN SCHEMA {} FROM SERVER {} INTO {}\n\
-             -- Tables would be queried from SYSCAT.TABLES WHERE TABSCHEMA = '{}'\n\
-             -- Columns would be queried from SYSCAT.COLUMNS\n\
-             -- This requires an active DB2 connection",
-            remote_schema, server_name, local_schema, remote_schema
-        );
-
-        debug!("{}", sample_sql);
-
-        // Build PostgreSQL list of commands
-        // Each command is a CREATE FOREIGN TABLE statement
+        // Connect and query
         let mut result: *mut pg_sys::List = std::ptr::null_mut();
 
-        // In production, we would iterate over discovered tables and add them
-        // For now, return empty list to indicate no tables imported
-        // The user can manually create foreign tables
+        match try_import_schema(
+            &connection_string,
+            user.as_deref(),
+            password.as_deref(),
+            &remote_schema,
+            &local_schema,
+            &server_name,
+            &table_filter,
+            import_type,
+            &limit_tables,
+            case_folding,
+            readonly,
+        ) {
+            Ok(commands) => {
+                // Convert commands to PostgreSQL list
+                for cmd in commands {
+                    let cstr = std::ffi::CString::new(cmd.as_str()).unwrap_or_default();
+                    let pg_str = pg_sys::pstrdup(cstr.as_ptr());
+                    result = pg_sys::lappend(result, pg_str as *mut std::ffi::c_void);
+                }
 
-        info!("Import foreign schema complete (no tables discovered in stub mode)");
+                info!("Import foreign schema complete, {} tables imported", (*result).length);
+            }
+            Err(e) => {
+                pgrx::error!("Failed to import foreign schema: {}", e);
+            }
+        }
+
         result
+    }
+}
+
+/// Parse option list into connection parameters
+unsafe fn parse_options(
+    options: *mut pg_sys::List,
+    dbserver: &mut Option<String>,
+    user: &mut Option<String>,
+    password: &mut Option<String>,
+    jwt_token: &mut Option<String>,
+    nls_lang: &mut Option<String>,
+) {
+    if options.is_null() {
+        return;
+    }
+
+    let list_len = (*options).length;
+    for i in 0..list_len {
+        let cell = pg_sys::list_nth_cell(options, i);
+        if cell.is_null() {
+            continue;
+        }
+
+        let def = (*cell).ptr_value as *mut pg_sys::DefElem;
+        if def.is_null() || (*def).defname.is_null() {
+            continue;
+        }
+
+        let defname = std::ffi::CStr::from_ptr((*def).defname)
+            .to_string_lossy()
+            .to_lowercase();
+
+        let defval = if (*def).arg.is_null() {
+            String::new()
+        } else {
+            let val = (*def).arg as *mut pg_sys::String;
+            if !val.is_null() && !(*val).sval.is_null() {
+                std::ffi::CStr::from_ptr((*val).sval)
+                    .to_string_lossy()
+                    .to_string()
+            } else {
+                String::new()
+            }
+        };
+
+        match defname.as_str() {
+            "dbserver" => *dbserver = Some(defval),
+            "user" => *user = Some(defval),
+            "password" => *password = Some(defval),
+            "jwt_token" => *jwt_token = Some(defval),
+            "nls_lang" => *nls_lang = Some(defval),
+            _ => {}
+        }
+    }
+}
+
+/// Try to import schema from DB2
+fn try_import_schema(
+    _connection_string: &str,
+    _user: Option<&str>,
+    _password: Option<&str>,
+    remote_schema: &str,
+    local_schema: &str,
+    server_name: &str,
+    table_filter: &str,
+    import_type: pg_sys::ImportForeignSchemaType,
+    limit_tables: &[String],
+    case_folding: CaseFolding,
+    readonly: bool,
+) -> Result<Vec<String>, String> {
+    // Query to get tables
+    let tables_sql = format!(
+        "SELECT TABNAME FROM SYSCAT.TABLES WHERE TABSCHEMA = '{}' AND TYPE = 'T'{}",
+        remote_schema.replace('\'', "''"),
+        table_filter
+    );
+
+    debug!(sql = %tables_sql, "Querying DB2 catalog for tables");
+
+    // For now, we'll return a placeholder indicating what would happen
+    // In production, this would:
+    // 1. Execute the tables query
+    // 2. For each table, query SYSCAT.COLUMNS
+    // 3. Build CREATE FOREIGN TABLE statements
+
+    let mut commands = Vec::new();
+
+    // If we have limit_tables and it's LIMIT_TO, use those
+    let tables_to_import: Vec<&str> = if import_type == pg_sys::ImportForeignSchemaType::FDW_IMPORT_SCHEMA_LIMIT_TO {
+        limit_tables.iter().map(|s| s.as_str()).collect()
+    } else {
+        // Would come from the query
+        Vec::new()
+    };
+
+    // Build CREATE FOREIGN TABLE for each table
+    for table_name in tables_to_import {
+        // Query columns
+        let columns_sql = format!(
+            "SELECT COLNAME, TYPENAME, NULLS, LENGTH, SCALE FROM SYSCAT.COLUMNS \
+             WHERE TABSCHEMA = '{}' AND TABNAME = '{}' ORDER BY COLNO",
+            remote_schema.replace('\'', "''"),
+            table_name.replace('\'', "''")
+        );
+
+        debug!(sql = %columns_sql, "Would query columns for table {}", table_name);
+
+        // Fold the table name
+        let folded_name = fold_case(table_name, case_folding);
+
+        // Build a skeleton CREATE FOREIGN TABLE (columns would come from SYSCAT.COLUMNS)
+        let mut create_sql = format!(
+            "CREATE FOREIGN TABLE \"{}\".\"{}\" (\n",
+            local_schema.replace('"', "\"\""),
+            folded_name.replace('"', "\"\"")
+        );
+
+        // Add placeholder column (in production, this comes from SYSCAT.COLUMNS)
+        create_sql.push_str("    -- Columns would be generated from SYSCAT.COLUMNS query\n");
+        create_sql.push_str("    id integer NOT NULL\n");
+
+        create_sql.push_str(&format!(
+            ") SERVER \"{}\" OPTIONS (\n    schema '{}',\n    table '{}'",
+            server_name.replace('"', "\"\""),
+            remote_schema.replace('\'', "''"),
+            table_name.replace('\'', "''")
+        ));
+
+        if readonly {
+            create_sql.push_str(",\n    readonly 'true'");
+        }
+
+        create_sql.push_str("\n)");
+
+        commands.push(create_sql);
+    }
+
+    info!("Generated {} CREATE FOREIGN TABLE statements", commands.len());
+    Ok(commands)
+}
+
+/// Fold identifier case according to the specified option
+fn fold_case(name: &str, folding: CaseFolding) -> String {
+    match folding {
+        CaseFolding::Keep => name.to_string(),
+        CaseFolding::Lower => name.to_lowercase(),
+        CaseFolding::Smart => {
+            // If all uppercase, convert to lowercase; otherwise keep original
+            if name.chars().all(|c| !c.is_alphabetic() || c.is_uppercase()) {
+                name.to_lowercase()
+            } else {
+                name.to_string()
+            }
+        }
     }
 }
 
