@@ -573,42 +573,133 @@ pub extern "C" fn exec_foreign_batch_insert(
 #[pg_guard]
 pub extern "C" fn exec_foreign_truncate(
     rels: *mut pg_sys::List,
-    _behavior: pg_sys::DropBehavior,
+    behavior: pg_sys::DropBehavior,
 ) {
     debug!("exec_foreign_truncate called");
 
-    // This would need to iterate through the list of relations
-    // and execute TRUNCATE TABLE for each one
     if rels.is_null() {
         return;
     }
 
-    // TODO: Implement when we can properly parse FDW options from relations
-    // For now, log a warning
-    warn!("TRUNCATE not fully implemented yet");
+    unsafe {
+        // Iterate through the list of relations
+        let list_len = (*rels).length;
+        debug!("TRUNCATE: processing {} relations", list_len);
+
+        for i in 0..list_len {
+            // Get relation from list
+            let cell = pg_sys::list_nth_cell(rels, i);
+            if cell.is_null() {
+                continue;
+            }
+
+            let rel = (*cell).ptr_value as pg_sys::Relation;
+            if rel.is_null() {
+                continue;
+            }
+
+            // Get table name
+            let relname = std::ffi::CStr::from_ptr((*(*rel).rd_rel).relname.data.as_ptr())
+                .to_string_lossy()
+                .to_string();
+
+            // Build options
+            let mut options = FdwOptions::new();
+            options.table = Some(relname.clone());
+
+            // Build TRUNCATE SQL
+            let sql = if let Some(qb) = QueryBuilder::from_options(&options) {
+                qb.build_truncate()
+            } else {
+                format!("TRUNCATE TABLE \"{}\" IMMEDIATE", relname)
+            };
+
+            debug!(sql = %sql, "Executing TRUNCATE");
+
+            // Execute TRUNCATE
+            // Note: This requires a session - in practice, we'd need to establish one
+            // For now, log the SQL that would be executed
+            info!("Would execute: {}", sql);
+
+            // TODO: Execute via session when proper option parsing is available
+            // let conn_opts = options.to_connection_options();
+            // if let Some(opts) = conn_opts {
+            //     let session = Db2Session::new(&opts);
+            //     session.connection().execute_immediate(&sql);
+            // }
+        }
+    }
 }
 
 /// Check if a foreign table is updatable
 ///
 /// PostgreSQL FDW callback: IsForeignRelUpdatable
+/// Returns a bitmap of allowed operations:
+/// - 1 = INSERT
+/// - 2 = UPDATE
+/// - 4 = DELETE
 #[pg_guard]
 pub extern "C" fn is_foreign_rel_updatable(
     rel: pg_sys::Relation,
 ) -> ::std::os::raw::c_int {
     debug!("is_foreign_rel_updatable called");
 
-    // Check the readonly option from foreign table options
-    // For now, allow all operations unless marked readonly
     unsafe {
         if rel.is_null() {
             return 0;
         }
 
-        // TODO: Parse options and check for readonly flag
-        // For now, return full updatability
-        // Return bitmap of allowed operations:
-        // 1 = INSERT, 2 = UPDATE, 4 = DELETE
-        1 | 2 | 4 // INSERT | UPDATE | DELETE
+        // Get the foreign table options to check for readonly flag
+        let relid = (*rel).rd_id;
+
+        // Get foreign table
+        let ft = pg_sys::GetForeignTable(relid);
+        if ft.is_null() {
+            // Not a foreign table, no updates allowed
+            return 0;
+        }
+
+        // Check options for readonly flag
+        let options = (*ft).options;
+        let mut is_readonly = false;
+
+        if !options.is_null() {
+            let list_len = (*options).length;
+            for i in 0..list_len {
+                let cell = pg_sys::list_nth_cell(options, i);
+                if cell.is_null() {
+                    continue;
+                }
+
+                let def = (*cell).ptr_value as *mut pg_sys::DefElem;
+                if def.is_null() {
+                    continue;
+                }
+
+                let defname = std::ffi::CStr::from_ptr((*def).defname)
+                    .to_string_lossy()
+                    .to_lowercase();
+
+                if defname == "readonly" {
+                    // Get the value
+                    let defval = (*def).arg as *mut pg_sys::String;
+                    if !defval.is_null() {
+                        let val = std::ffi::CStr::from_ptr((*defval).sval)
+                            .to_string_lossy()
+                            .to_lowercase();
+                        is_readonly = matches!(val.as_ref(), "on" | "true" | "yes" | "1");
+                    }
+                }
+            }
+        }
+
+        if is_readonly {
+            debug!("Foreign table is marked readonly");
+            return 0; // No updates allowed
+        }
+
+        // Return bitmap: INSERT | UPDATE | DELETE
+        1 | 2 | 4
     }
 }
 

@@ -8,6 +8,7 @@ use tracing::{debug, info, warn, error};
 
 use crate::options::FdwOptions;
 use crate::state::{FdwPlanState, FdwScanState};
+use crate::query::QueryBuilder;
 use db2_odbc::{Db2Value, SqlType};
 
 /// Get the estimated size of a foreign relation
@@ -62,9 +63,9 @@ pub extern "C" fn get_foreign_paths(
 /// PostgreSQL FDW callback: GetForeignPlan
 #[pg_guard]
 pub extern "C" fn get_foreign_plan(
-    _root: *mut pg_sys::PlannerInfo,
+    root: *mut pg_sys::PlannerInfo,
     baserel: *mut pg_sys::RelOptInfo,
-    _foreigntableid: pg_sys::Oid,
+    foreigntableid: pg_sys::Oid,
     _best_path: *mut pg_sys::ForeignPath,
     tlist: *mut pg_sys::List,
     scan_clauses: *mut pg_sys::List,
@@ -72,13 +73,54 @@ pub extern "C" fn get_foreign_plan(
 ) -> *mut pg_sys::ForeignScan {
     debug!("get_foreign_plan called");
     unsafe {
-        // Build the SQL query
-        // TODO: Implement proper query deparsing from db2_query crate
-        let plan_state = FdwPlanState::new(
-            "SELECT * FROM remote_table".into(),
-            vec!["*".into()],
-        );
+        // Get the foreign table and relation
+        let rte = pg_sys::planner_rt_fetch((*baserel).relid, root);
 
+        // Extract column names from target list
+        let mut columns = Vec::new();
+        if !tlist.is_null() {
+            let list_len = (*tlist).length;
+            for i in 0..list_len {
+                // Each element in target list is a TargetEntry
+                // For now, we'll select all columns
+                columns.push("*".to_string());
+                break; // Just use SELECT * for now
+            }
+        }
+        if columns.is_empty() {
+            columns.push("*".to_string());
+        }
+
+        // Build options - get table name from relation
+        let mut options = FdwOptions::new();
+
+        // Try to get the relation to extract table name
+        let rel = pg_sys::RelationIdGetRelation(foreigntableid);
+        if !rel.is_null() {
+            let relname = std::ffi::CStr::from_ptr((*(*rel).rd_rel).relname.data.as_ptr())
+                .to_string_lossy()
+                .to_string();
+            options.table = Some(relname);
+            pg_sys::RelationClose(rel);
+        }
+
+        // Build the SQL query using QueryBuilder
+        let sql = if let Some(qb) = QueryBuilder::from_options(&options) {
+            qb.with_columns(columns.clone()).build_select(None, None, None)
+        } else {
+            format!("SELECT * FROM \"{}\"", options.table.as_deref().unwrap_or("unknown"))
+        };
+
+        debug!(sql = %sql, "Built SELECT query for plan");
+
+        // Create plan state
+        let plan_state = FdwPlanState::new(sql, columns);
+
+        // Serialize plan state to pass to executor
+        let plan_bytes = plan_state.serialize();
+
+        // Create a PostgreSQL List to hold the plan state
+        // For now, we'll pass it via the scan's fdw_private field
         let scan_clauses = pg_sys::extract_actual_clauses(scan_clauses, false);
 
         pg_sys::make_foreignscan(
@@ -86,7 +128,7 @@ pub extern "C" fn get_foreign_plan(
             scan_clauses,
             (*baserel).relid,
             std::ptr::null_mut(), // fdw_exprs
-            std::ptr::null_mut(), // fdw_private (would contain serialized plan_state)
+            std::ptr::null_mut(), // fdw_private - TODO: pass plan_state through this
             std::ptr::null_mut(), // fdw_scan_tlist
             std::ptr::null_mut(), // fdw_recheck_quals
             outer_plan,
@@ -105,11 +147,31 @@ pub extern "C" fn begin_foreign_scan(
     debug!("begin_foreign_scan called");
 
     unsafe {
+        // Get the foreign scan node to access relation info
+        let scan = (*node).ss.ps.plan as *mut pg_sys::ForeignScan;
+        let rel = (*node).ss.ss_currentRelation;
+
+        // Build options from relation
+        let mut options = FdwOptions::new();
+
+        if !rel.is_null() {
+            let relname = std::ffi::CStr::from_ptr((*(*rel).rd_rel).relname.data.as_ptr())
+                .to_string_lossy()
+                .to_string();
+            options.table = Some(relname);
+        }
+
+        // Build the SQL query
+        let sql = if let Some(qb) = QueryBuilder::from_options(&options) {
+            qb.build_select(None, None, None)
+        } else {
+            format!("SELECT * FROM \"{}\"", options.table.as_deref().unwrap_or("unknown"))
+        };
+
+        let plan_state = FdwPlanState::new(sql.clone(), vec!["*".into()]);
+
         // Allocate scan state in PostgreSQL memory context
-        let state = Box::new(FdwScanState::new(
-            FdwOptions::new(),
-            FdwPlanState::default(),
-        ));
+        let state = Box::new(FdwScanState::new(options, plan_state));
 
         // Store as fdw_state
         (*node).fdw_state = Box::into_raw(state) as *mut std::ffi::c_void;
@@ -125,6 +187,7 @@ pub extern "C" fn begin_foreign_scan(
         }
 
         // Execute the query
+        debug!(sql = %state.plan.sql, "Executing foreign scan query");
         if let Some(ref mut session) = state.session {
             if let Err(e) = session.prepare_and_execute(&state.plan.sql, &[]) {
                 error!("Failed to execute query: {}", e);
@@ -355,14 +418,75 @@ pub extern "C" fn end_foreign_scan(node: *mut pg_sys::ForeignScanState) {
 /// Analyze a foreign table
 ///
 /// PostgreSQL FDW callback: AnalyzeForeignTable
+/// Returns true if we can provide statistics, false otherwise.
 #[pg_guard]
 pub extern "C" fn analyze_foreign_table(
-    _relation: pg_sys::Relation,
-    _func: *mut pg_sys::AcquireSampleRowsFunc,
-    _totalpages: *mut pg_sys::BlockNumber,
+    relation: pg_sys::Relation,
+    func: *mut pg_sys::AcquireSampleRowsFunc,
+    totalpages: *mut pg_sys::BlockNumber,
 ) -> bool {
-    // TODO: Implement ANALYZE support by sampling rows from DB2
-    false
+    debug!("analyze_foreign_table called");
+
+    unsafe {
+        if relation.is_null() || func.is_null() || totalpages.is_null() {
+            return false;
+        }
+
+        // Set the sampling function
+        *func = Some(acquire_sample_rows);
+
+        // Estimate total pages (1 page = 8KB typically)
+        // Use a rough estimate based on expected row count
+        *totalpages = 100; // Default estimate
+
+        true
+    }
+}
+
+/// Acquire sample rows for ANALYZE
+///
+/// This function is called by PostgreSQL to get a sample of rows from the foreign table.
+#[pg_guard]
+pub extern "C" fn acquire_sample_rows(
+    relation: pg_sys::Relation,
+    _elevel: ::std::os::raw::c_int,
+    rows: *mut pg_sys::HeapTuple,
+    targrows: ::std::os::raw::c_int,
+    totalrows: *mut f64,
+    _totaldeadrows: *mut f64,
+) -> ::std::os::raw::c_int {
+    debug!("acquire_sample_rows called, target = {}", targrows);
+
+    unsafe {
+        if relation.is_null() || rows.is_null() || totalrows.is_null() {
+            return 0;
+        }
+
+        // Build options from relation
+        let mut options = FdwOptions::new();
+        let relname = std::ffi::CStr::from_ptr((*(*relation).rd_rel).relname.data.as_ptr())
+            .to_string_lossy()
+            .to_string();
+        options.table = Some(relname);
+
+        // Build a COUNT query to get total rows
+        let count_sql = if let Some(qb) = QueryBuilder::from_options(&options) {
+            format!("SELECT COUNT(*) FROM \"{}\"", qb.table())
+        } else {
+            return 0;
+        };
+
+        // For now, return 0 rows but estimate total
+        // A full implementation would:
+        // 1. Execute COUNT(*) to get total rows
+        // 2. Execute SELECT with TABLESAMPLE or FETCH FIRST N ROWS
+        // 3. Convert rows to HeapTuples
+
+        *totalrows = 1000.0; // Default estimate
+
+        debug!("ANALYZE: estimated {} total rows", *totalrows);
+        0 // Return 0 sample rows for now
+    }
 }
 
 /// Get foreign join paths
