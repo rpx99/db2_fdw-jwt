@@ -26,6 +26,7 @@ pub mod import;
 pub mod transaction;
 pub mod state;
 pub mod query;
+pub mod deparsing;
 
 use db2_connection::{close_all_connections, get_cache_stats};
 

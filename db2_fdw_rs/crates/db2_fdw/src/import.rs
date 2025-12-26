@@ -4,22 +4,130 @@
 
 use pgrx::prelude::*;
 use pgrx::pg_sys;
+use tracing::{debug, info, warn, error};
+
+use crate::options::FdwOptions;
+use db2_connection::Db2Session;
 
 /// Import a foreign schema
 ///
 /// PostgreSQL FDW callback: ImportForeignSchema
 #[pg_guard]
 pub extern "C" fn import_foreign_schema(
-    _stmt: *mut pg_sys::ImportForeignSchemaStmt,
-    _serverOid: pg_sys::Oid,
+    stmt: *mut pg_sys::ImportForeignSchemaStmt,
+    serverOid: pg_sys::Oid,
 ) -> *mut pg_sys::List {
-    // Real implementation would:
-    // 1. Connect to DB2
-    // 2. Query catalog for table definitions
-    // 3. Generate CREATE FOREIGN TABLE statements
+    debug!("import_foreign_schema called");
 
-    // For now, return empty list
-    std::ptr::null_mut()
+    unsafe {
+        if stmt.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        // Get the remote schema name
+        let remote_schema = if (*stmt).remote_schema.is_null() {
+            return std::ptr::null_mut();
+        } else {
+            std::ffi::CStr::from_ptr((*stmt).remote_schema)
+                .to_string_lossy()
+                .to_string()
+        };
+
+        // Get the local schema name
+        let local_schema = if (*stmt).local_schema.is_null() {
+            "public".to_string()
+        } else {
+            std::ffi::CStr::from_ptr((*stmt).local_schema)
+                .to_string_lossy()
+                .to_string()
+        };
+
+        // Get the server name
+        let server = pg_sys::GetForeignServer(serverOid);
+        if server.is_null() {
+            error!("Could not get foreign server");
+            return std::ptr::null_mut();
+        }
+
+        let server_name = std::ffi::CStr::from_ptr((*server).servername)
+            .to_string_lossy()
+            .to_string();
+
+        info!(
+            remote_schema = %remote_schema,
+            local_schema = %local_schema,
+            server = %server_name,
+            "Importing foreign schema"
+        );
+
+        // Get import type
+        let import_type = (*stmt).list_type;
+
+        // Get the table list (for LIMIT TO or EXCEPT)
+        let table_list = (*stmt).table_list;
+        let mut limit_tables: Vec<String> = Vec::new();
+        let mut except_tables: Vec<String> = Vec::new();
+
+        if !table_list.is_null() {
+            let list_len = (*table_list).length;
+            for i in 0..list_len {
+                let cell = pg_sys::list_nth_cell(table_list, i);
+                if cell.is_null() {
+                    continue;
+                }
+
+                let rv = (*cell).ptr_value as *mut pg_sys::RangeVar;
+                if rv.is_null() || (*rv).relname.is_null() {
+                    continue;
+                }
+
+                let table_name = std::ffi::CStr::from_ptr((*rv).relname)
+                    .to_string_lossy()
+                    .to_string();
+
+                match import_type {
+                    pg_sys::ImportForeignSchemaType::FDW_IMPORT_SCHEMA_LIMIT_TO => {
+                        limit_tables.push(table_name);
+                    }
+                    pg_sys::ImportForeignSchemaType::FDW_IMPORT_SCHEMA_EXCEPT => {
+                        except_tables.push(table_name);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Build CREATE FOREIGN TABLE statements
+        // In a real implementation, we would:
+        // 1. Connect to DB2 using server options
+        // 2. Query SYSCAT.TABLES and SYSCAT.COLUMNS
+        // 3. Generate CREATE FOREIGN TABLE statements
+
+        // For now, generate a sample structure showing the approach
+        let mut commands: Vec<String> = Vec::new();
+
+        // Example: Generate a placeholder showing the SQL that would be generated
+        let sample_sql = format!(
+            "-- IMPORT FOREIGN SCHEMA {} FROM SERVER {} INTO {}\n\
+             -- Tables would be queried from SYSCAT.TABLES WHERE TABSCHEMA = '{}'\n\
+             -- Columns would be queried from SYSCAT.COLUMNS\n\
+             -- This requires an active DB2 connection",
+            remote_schema, server_name, local_schema, remote_schema
+        );
+
+        debug!("{}", sample_sql);
+
+        // Build PostgreSQL list of commands
+        // Each command is a CREATE FOREIGN TABLE statement
+        let mut result: *mut pg_sys::List = std::ptr::null_mut();
+
+        // In production, we would iterate over discovered tables and add them
+        // For now, return empty list to indicate no tables imported
+        // The user can manually create foreign tables
+
+        info!("Import foreign schema complete (no tables discovered in stub mode)");
+        result
+    }
 }
 
 /// Column definition from DB2 catalog
