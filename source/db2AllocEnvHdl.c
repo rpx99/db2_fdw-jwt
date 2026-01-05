@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <string.h>
 #include <sqlcli1.h>
 #include <postgres_ext.h>
