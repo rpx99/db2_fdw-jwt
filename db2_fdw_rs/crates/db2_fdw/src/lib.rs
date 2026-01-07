@@ -45,6 +45,7 @@ pub use options::{FdwOptions, OptionContext, validate_options};
 pub use state::{FdwPlanState, FdwScanState, FdwModifyState};
 
 /// Initialize the extension
+#[no_mangle]
 pub extern "C" fn _PG_init() {
     // Register transaction callbacks
     transaction::register_callbacks();
@@ -57,6 +58,7 @@ pub extern "C" fn _PG_init() {
 ///
 /// This is called by PostgreSQL to get the FDW callback routines.
 /// It returns a fully initialized FdwRoutine with all callbacks.
+#[no_mangle]
 pub extern "C" fn db2_fdw_handler() -> pg_sys::Datum {
     use crate::scan::{
         get_foreign_rel_size, get_foreign_paths, get_foreign_join_paths,
@@ -134,6 +136,7 @@ pub extern "C" fn db2_fdw_handler() -> pg_sys::Datum {
 }
 
 /// FDW Validator function
+#[no_mangle]
 pub extern "C" fn db2_fdw_validator(options: Vec<String>, catalog: pg_sys::Oid) {
     let context = OptionContext::from_catalog_oid(catalog);
 
