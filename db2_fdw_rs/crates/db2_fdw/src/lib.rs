@@ -27,6 +27,7 @@ pub mod transaction;
 pub mod state;
 pub mod query;
 pub mod deparsing;
+pub mod safe_ffi;
 
 use db2_connection::{close_all_connections, get_cache_stats};
 
@@ -41,12 +42,9 @@ pub const EXTENSION_NAME: &str = "db2_fdw";
 
 // Re-export commonly used types
 pub use options::{FdwOptions, OptionContext, validate_options};
-pub use scan::ForeignScan;
-pub use modify::ForeignModify;
-pub use state::FdwState;
+pub use state::{FdwPlanState, FdwScanState, FdwModifyState};
 
 /// Initialize the extension
-#[pg_guard]
 pub extern "C" fn _PG_init() {
     // Register transaction callbacks
     transaction::register_callbacks();
@@ -58,76 +56,85 @@ pub extern "C" fn _PG_init() {
 /// FDW Handler function
 ///
 /// This is called by PostgreSQL to get the FDW callback routines.
-/// It replaces the C db2_fdw_handler function.
-#[pg_extern(sql = "
-CREATE OR REPLACE FUNCTION db2_fdw_handler()
-RETURNS fdw_handler
-AS 'MODULE_PATHNAME', 'db2_fdw_handler'
-LANGUAGE C STRICT;
-")]
-fn db2_fdw_handler() -> pg_sys::FdwRoutine {
-    let mut routine = pg_sys::FdwRoutine::default();
+/// It returns a fully initialized FdwRoutine with all callbacks.
+pub extern "C" fn db2_fdw_handler() -> pg_sys::Datum {
+    use crate::scan::{
+        get_foreign_rel_size, get_foreign_paths, get_foreign_join_paths,
+        get_foreign_plan, analyze_foreign_table,
+        begin_foreign_scan, iterate_foreign_scan, re_scan_foreign_scan, end_foreign_scan,
+        explain_foreign_scan,
+    };
+    use crate::explain::explain_foreign_modify;
+    use crate::modify::{
+        add_foreign_update_targets, plan_foreign_modify,
+        begin_foreign_modify, exec_foreign_insert, exec_foreign_update, exec_foreign_delete,
+        end_foreign_modify,
+        begin_foreign_insert, end_foreign_insert, exec_foreign_truncate,
+        is_foreign_rel_updatable,
+    };
+    use crate::import::import_foreign_schema;
 
-    // Query planning callbacks
-    routine.GetForeignRelSize = Some(scan::get_foreign_rel_size);
-    routine.GetForeignPaths = Some(scan::get_foreign_paths);
-    routine.GetForeignPlan = Some(scan::get_foreign_plan);
+    unsafe {
+        // Allocate memory for FdwRoutine using PostgreSQL's palloc
+        let fdwroutine = pg_sys::palloc(std::mem::size_of::<pg_sys::FdwRoutine>()) as *mut pg_sys::FdwRoutine;
 
-    // Scan execution callbacks
-    routine.BeginForeignScan = Some(scan::begin_foreign_scan);
-    routine.IterateForeignScan = Some(scan::iterate_foreign_scan);
-    routine.ReScanForeignScan = Some(scan::rescan_foreign_scan);
-    routine.EndForeignScan = Some(scan::end_foreign_scan);
+        if fdwroutine.is_null() {
+            pgrx::error!("Failed to allocate memory for FdwRoutine");
+        }
 
-    // Modification callbacks
-    routine.AddForeignUpdateTargets = Some(modify::add_foreign_update_targets);
-    routine.PlanForeignModify = Some(modify::plan_foreign_modify);
-    routine.BeginForeignModify = Some(modify::begin_foreign_modify);
-    routine.ExecForeignInsert = Some(modify::exec_foreign_insert);
-    routine.ExecForeignUpdate = Some(modify::exec_foreign_update);
-    routine.ExecForeignDelete = Some(modify::exec_foreign_delete);
-    routine.EndForeignModify = Some(modify::end_foreign_modify);
+        // Initialize all fields to NULL (PostgreSQL convention)
+        std::ptr::write_bytes(fdwroutine, 0, 1);
 
-    // Batch insert support (PostgreSQL 14+)
-    #[cfg(feature = "pg14")]
-    {
-        routine.GetForeignModifyBatchSize = Some(modify::get_foreign_modify_batch_size);
-        routine.ExecForeignBatchInsert = Some(modify::exec_foreign_batch_insert);
+        // Planning callbacks
+        (*fdwroutine).GetForeignRelSize = Some(get_foreign_rel_size);
+        (*fdwroutine).GetForeignPaths = Some(get_foreign_paths);
+        (*fdwroutine).GetForeignJoinPaths = Some(get_foreign_join_paths);
+        (*fdwroutine).GetForeignPlan = Some(get_foreign_plan);
+        (*fdwroutine).AnalyzeForeignTable = Some(analyze_foreign_table);
+
+        // Execution callbacks - Scan
+        (*fdwroutine).ExplainForeignScan = Some(explain_foreign_scan);
+        (*fdwroutine).BeginForeignScan = Some(begin_foreign_scan);
+        (*fdwroutine).IterateForeignScan = Some(iterate_foreign_scan);
+        (*fdwroutine).ReScanForeignScan = Some(re_scan_foreign_scan);
+        (*fdwroutine).EndForeignScan = Some(end_foreign_scan);
+
+        // Execution callbacks - Modify
+        (*fdwroutine).AddForeignUpdateTargets = Some(add_foreign_update_targets);
+        (*fdwroutine).PlanForeignModify = Some(plan_foreign_modify);
+        (*fdwroutine).BeginForeignModify = Some(begin_foreign_modify);
+        (*fdwroutine).ExecForeignInsert = Some(exec_foreign_insert);
+        (*fdwroutine).ExecForeignUpdate = Some(exec_foreign_update);
+        (*fdwroutine).ExecForeignDelete = Some(exec_foreign_delete);
+        (*fdwroutine).EndForeignModify = Some(end_foreign_modify);
+        (*fdwroutine).ExplainForeignModify = Some(explain_foreign_modify);
+
+        // Insert/Modify callbacks
+        (*fdwroutine).BeginForeignInsert = Some(begin_foreign_insert);
+        (*fdwroutine).EndForeignInsert = Some(end_foreign_insert);
+
+        // Query control callbacks
+        (*fdwroutine).ImportForeignSchema = Some(import_foreign_schema);
+        (*fdwroutine).IsForeignRelUpdatable = Some(is_foreign_rel_updatable);
+
+        // Truncate (PG14+)
+        #[cfg(any(feature = "pg14", feature = "pg15", feature = "pg16", feature = "pg17", feature = "pg18"))]
+        {
+            (*fdwroutine).ExecForeignTruncate = Some(exec_foreign_truncate);
+            // TODO: Implement batch insert support
+            // (*fdwroutine).ExecForeignBatchInsert = Some(exec_foreign_batch_insert);
+            // (*fdwroutine).GetForeignModifyBatchSize = Some(get_foreign_modify_batch_size);
+        }
+
+        // TODO: Add missing callbacks
+        // - All callbacks now implemented except optional ones
+
+        pg_sys::Datum::from(fdwroutine)
     }
-
-    // Truncate support
-    routine.ExecForeignTruncate = Some(modify::exec_foreign_truncate);
-
-    // EXPLAIN support
-    routine.ExplainForeignScan = Some(explain::explain_foreign_scan);
-    routine.ExplainForeignModify = Some(explain::explain_foreign_modify);
-
-    // ANALYZE support
-    routine.AnalyzeForeignTable = Some(scan::analyze_foreign_table);
-
-    // IMPORT FOREIGN SCHEMA support
-    routine.ImportForeignSchema = Some(import::import_foreign_schema);
-
-    // Updateability check
-    routine.IsForeignRelUpdatable = Some(modify::is_foreign_rel_updatable);
-
-    // Join pushdown (PostgreSQL 9.6+)
-    routine.GetForeignJoinPaths = Some(scan::get_foreign_join_paths);
-
-    routine
 }
 
 /// FDW Validator function
-///
-/// Validates options for foreign servers, tables, and user mappings.
-/// This replaces the C db2_fdw_validator function.
-#[pg_extern(sql = "
-CREATE OR REPLACE FUNCTION db2_fdw_validator(text[], oid)
-RETURNS void
-AS 'MODULE_PATHNAME', 'db2_fdw_validator'
-LANGUAGE C STRICT;
-")]
-fn db2_fdw_validator(options: Vec<String>, catalog: pg_sys::Oid) {
+pub extern "C" fn db2_fdw_validator(options: Vec<String>, catalog: pg_sys::Oid) {
     let context = OptionContext::from_catalog_oid(catalog);
 
     if let Err(e) = validate_options(&options, context) {
@@ -139,6 +146,9 @@ fn db2_fdw_validator(options: Vec<String>, catalog: pg_sys::Oid) {
 ///
 /// Utility function to close all cached connections in this backend.
 /// Replaces the C db2_close_connections function.
+///
+/// Safety: Will error if there's an active DML transaction, to prevent
+/// closing connections while modifications are in progress.
 #[pg_extern(sql = "
 CREATE OR REPLACE FUNCTION db2_close_connections()
 RETURNS void
@@ -146,6 +156,14 @@ AS 'MODULE_PATHNAME', 'db2_close_connections'
 LANGUAGE C STRICT;
 ")]
 fn db2_close_connections() {
+    use crate::transaction::is_dml_in_transaction;
+
+    if is_dml_in_transaction() {
+        pgrx::error!(
+            "connections with an active transaction cannot be closed",
+        );
+    }
+
     pgrx::log!("Closing all DB2 connections");
     close_all_connections();
 }

@@ -9,13 +9,13 @@ description = "DB2 Foreign Data Wrapper for PostgreSQL"
 crate-type = ["cdylib"]
 
 [features]
-default = ["pg16"]
-pg12 = ["pgrx/pg12"]
+default = ["pg18"]
 pg13 = ["pgrx/pg13"]
 pg14 = ["pgrx/pg14"]
 pg15 = ["pgrx/pg15"]
 pg16 = ["pgrx/pg16"]
 pg17 = ["pgrx/pg17"]
+pg18 = ["pgrx/pg18"]
 
 [dependencies]
 db2_odbc = { path = "../db2_odbc" }

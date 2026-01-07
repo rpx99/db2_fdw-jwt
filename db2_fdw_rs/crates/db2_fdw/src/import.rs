@@ -2,12 +2,10 @@
 //!
 //! Imports table definitions from DB2 into PostgreSQL.
 
-use pgrx::prelude::*;
 use pgrx::pg_sys;
-use tracing::{debug, info, warn, error};
+use tracing::{debug, info};
 
-use crate::options::FdwOptions;
-use db2_connection::Db2Session;
+use crate::options::validate_options;
 
 /// Case folding options for identifiers
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -23,8 +21,7 @@ pub enum CaseFolding {
 /// Import a foreign schema
 ///
 /// PostgreSQL FDW callback: ImportForeignSchema
-#[pg_guard]
-pub extern "C" fn import_foreign_schema(
+pub unsafe extern "C-unwind" fn import_foreign_schema(
     stmt: *mut pg_sys::ImportForeignSchemaStmt,
     serverOid: pg_sys::Oid,
 ) -> *mut pg_sys::List {
@@ -203,7 +200,7 @@ pub extern "C" fn import_foreign_schema(
             &local_schema,
             &server_name,
             &table_filter,
-            import_type,
+            import_type as i32,
             &limit_tables,
             case_folding,
             readonly,
@@ -289,7 +286,7 @@ fn try_import_schema(
     local_schema: &str,
     server_name: &str,
     table_filter: &str,
-    import_type: pg_sys::ImportForeignSchemaType,
+    import_type: i32,  // ImportForeignSchemaType is now i32 in PG18
     limit_tables: &[String],
     case_folding: CaseFolding,
     readonly: bool,
@@ -311,8 +308,13 @@ fn try_import_schema(
 
     let mut commands = Vec::new();
 
+    // Import foreign schema type constants (from PostgreSQL enum)
+    const FDW_IMPORT_SCHEMA_ALL: i32 = 0;
+    const FDW_IMPORT_SCHEMA_LIMIT_TO: i32 = 1;
+    const FDW_IMPORT_SCHEMA_EXCEPT: i32 = 2;
+
     // If we have limit_tables and it's LIMIT_TO, use those
-    let tables_to_import: Vec<&str> = if import_type == pg_sys::ImportForeignSchemaType::FDW_IMPORT_SCHEMA_LIMIT_TO {
+    let tables_to_import: Vec<&str> = if import_type == FDW_IMPORT_SCHEMA_LIMIT_TO {
         limit_tables.iter().map(|s| s.as_str()).collect()
     } else {
         // Would come from the query

@@ -3,7 +3,6 @@
 //! Manages state passed between planning and execution phases.
 
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 use crate::options::FdwOptions;
 use db2_connection::Db2Session;
@@ -86,6 +85,8 @@ pub struct FdwScanState {
     pub current_row: Option<Vec<Db2Value>>,
     /// Whether the scan is finished
     pub finished: bool,
+    /// Whether the scan needs to be reinitialized
+    pub needs_reinit: bool,
 }
 
 impl FdwScanState {
@@ -98,6 +99,7 @@ impl FdwScanState {
             rows_fetched: 0,
             current_row: None,
             finished: false,
+            needs_reinit: false,
         }
     }
 

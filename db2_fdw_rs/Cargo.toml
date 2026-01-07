@@ -8,7 +8,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "19.0.0"
+version = "18.1.1"
 edition = "2021"
 license = "PostgreSQL"
 authors = ["Thomas Muenz", "Wolfgang Brandl", "Contributors"]
@@ -17,7 +17,7 @@ description = "DB2 Foreign Data Wrapper for PostgreSQL - Rust Implementation"
 
 [workspace.dependencies]
 # PostgreSQL Extension Framework
-pgrx = "0.12"
+pgrx = "0.16"
 
 # ODBC
 odbc-api = "8.1"

@@ -2,22 +2,44 @@
 //!
 //! Handles SELECT queries against DB2 tables with real ODBC execution.
 
-use pgrx::prelude::*;
 use pgrx::pg_sys;
 use tracing::{debug, info, warn, error};
+use std::ffi::CStr;
 
 use crate::options::FdwOptions;
 use crate::state::{FdwPlanState, FdwScanState};
 use crate::query::QueryBuilder;
 use crate::deparsing::classify_conditions;
-use db2_odbc::{Db2Value, SqlType};
+use db2_odbc::{Db2Value};
 use db2_query::pushdown::PushdownChecker;
+
+// Use safe FFI wrappers
+use crate::safe_ffi;
+
+// Temporary type definition until pgrx exports this properly
+type JoinType = u32;
+
+// Safe varlena helper functions for compatibility
+/// Set the length field of a varlena structure
+pub unsafe fn set_varsize(ptr: *mut u8, len: i32) {
+    *(ptr as *mut i32) = len;
+}
+
+/// Get pointer to data in a varlena structure
+pub unsafe fn vardata_any(ptr: *const u8) -> *const u8 {
+    ptr.add(1)
+}
+
+/// Get length of varlena structure minus header
+pub unsafe fn varsize_any_exhdr(ptr: *const u8) -> usize {
+    (*(ptr as *const i32) & 0x3FFFFFFF) as usize - 1
+}
+
 
 /// Get the estimated size of a foreign relation
 ///
 /// PostgreSQL FDW callback: GetForeignRelSize
-#[pg_guard]
-pub extern "C" fn get_foreign_rel_size(
+pub unsafe extern "C-unwind" fn get_foreign_rel_size(
     _root: *mut pg_sys::PlannerInfo,
     baserel: *mut pg_sys::RelOptInfo,
     _foreigntableid: pg_sys::Oid,
@@ -32,8 +54,7 @@ pub extern "C" fn get_foreign_rel_size(
 /// Create access paths for a foreign scan
 ///
 /// PostgreSQL FDW callback: GetForeignPaths
-#[pg_guard]
-pub extern "C" fn get_foreign_paths(
+pub unsafe extern "C-unwind" fn get_foreign_paths(
     root: *mut pg_sys::PlannerInfo,
     baserel: *mut pg_sys::RelOptInfo,
     _foreigntableid: pg_sys::Oid,
@@ -48,12 +69,14 @@ pub extern "C" fn get_foreign_paths(
             baserel,
             std::ptr::null_mut(), // pathtarget
             (*baserel).rows,
+            0, // parallel_workers (PG18 new parameter)
             startup_cost,
             total_cost,
             std::ptr::null_mut(), // pathkeys
             std::ptr::null_mut(), // required_outer
             std::ptr::null_mut(), // fdw_outerpath
             std::ptr::null_mut(), // fdw_private
+            std::ptr::null_mut(), // fdw_restrictions (PG18 new parameter)
         );
 
         pg_sys::add_path(baserel, path as *mut pg_sys::Path);
@@ -63,8 +86,7 @@ pub extern "C" fn get_foreign_paths(
 /// Create a foreign scan plan
 ///
 /// PostgreSQL FDW callback: GetForeignPlan
-#[pg_guard]
-pub extern "C" fn get_foreign_plan(
+pub unsafe extern "C-unwind" fn get_foreign_plan(
     root: *mut pg_sys::PlannerInfo,
     baserel: *mut pg_sys::RelOptInfo,
     foreigntableid: pg_sys::Oid,
@@ -156,8 +178,7 @@ pub extern "C" fn get_foreign_plan(
 /// Begin a foreign scan
 ///
 /// PostgreSQL FDW callback: BeginForeignScan
-#[pg_guard]
-pub extern "C" fn begin_foreign_scan(
+pub unsafe extern "C-unwind" fn begin_foreign_scan(
     node: *mut pg_sys::ForeignScanState,
     _eflags: ::std::os::raw::c_int,
 ) {
@@ -165,7 +186,7 @@ pub extern "C" fn begin_foreign_scan(
 
     unsafe {
         // Get the foreign scan node to access relation info
-        let scan = (*node).ss.ps.plan as *mut pg_sys::ForeignScan;
+        let _scan = (*node).ss.ps.plan as *mut pg_sys::ForeignScan;
         let rel = (*node).ss.ss_currentRelation;
 
         // Build options from relation
@@ -219,8 +240,7 @@ pub extern "C" fn begin_foreign_scan(
 /// Fetch the next row from the foreign table
 ///
 /// PostgreSQL FDW callback: IterateForeignScan
-#[pg_guard]
-pub extern "C" fn iterate_foreign_scan(
+pub unsafe extern "C-unwind" fn iterate_foreign_scan(
     node: *mut pg_sys::ForeignScanState,
 ) -> *mut pg_sys::TupleTableSlot {
     unsafe {
@@ -320,11 +340,13 @@ unsafe fn fill_tuple_slot(
             }
             Db2Value::Real(v) => {
                 *nulls.add(i) = false;
-                *values.add(i) = pg_sys::Datum::from(*v);
+                // Safe bit-casting wrapper - preserves binary representation
+                *values.add(i) = safe_ffi::f32_to_datum(*v);
             }
             Db2Value::Double(v) => {
                 *nulls.add(i) = false;
-                *values.add(i) = pg_sys::Datum::from(*v);
+                // Safe bit-casting wrapper - preserves binary representation
+                *values.add(i) = safe_ffi::f64_to_datum(*v);
             }
             Db2Value::Decimal(d) => {
                 *nulls.add(i) = false;
@@ -363,11 +385,11 @@ unsafe fn fill_tuple_slot(
             Db2Value::Binary(b) => {
                 *nulls.add(i) = false;
                 // Convert to PostgreSQL bytea
-                let bytea = pg_sys::palloc(b.len() + pg_sys::VARHDRSZ as usize) as *mut pg_sys::varlena;
-                pg_sys::SET_VARSIZE(bytea, (b.len() + pg_sys::VARHDRSZ as usize) as i32);
+                let bytea = pg_sys::palloc(b.len() + pg_sys::VARHDRSZ as usize) as *mut u8;
+                set_varsize(bytea, (b.len() + pg_sys::VARHDRSZ as usize) as i32);
                 std::ptr::copy_nonoverlapping(
                     b.as_ptr(),
-                    (bytea as *mut u8).add(pg_sys::VARHDRSZ as usize),
+                    bytea.add(pg_sys::VARHDRSZ as usize),
                     b.len(),
                 );
                 *values.add(i) = pg_sys::Datum::from(bytea);
@@ -387,8 +409,7 @@ unsafe fn fill_tuple_slot(
 /// Restart a foreign scan
 ///
 /// PostgreSQL FDW callback: ReScanForeignScan
-#[pg_guard]
-pub extern "C" fn rescan_foreign_scan(node: *mut pg_sys::ForeignScanState) {
+pub unsafe extern "C-unwind" fn rescan_foreign_scan(node: *mut pg_sys::ForeignScanState) {
     debug!("rescan_foreign_scan called");
     unsafe {
         let state = (*node).fdw_state as *mut FdwScanState;
@@ -415,8 +436,7 @@ pub extern "C" fn rescan_foreign_scan(node: *mut pg_sys::ForeignScanState) {
 /// End a foreign scan
 ///
 /// PostgreSQL FDW callback: EndForeignScan
-#[pg_guard]
-pub extern "C" fn end_foreign_scan(node: *mut pg_sys::ForeignScanState) {
+pub unsafe extern "C-unwind" fn end_foreign_scan(node: *mut pg_sys::ForeignScanState) {
     debug!("end_foreign_scan called");
     unsafe {
         let state = (*node).fdw_state as *mut FdwScanState;
@@ -436,8 +456,7 @@ pub extern "C" fn end_foreign_scan(node: *mut pg_sys::ForeignScanState) {
 ///
 /// PostgreSQL FDW callback: AnalyzeForeignTable
 /// Returns true if we can provide statistics, false otherwise.
-#[pg_guard]
-pub extern "C" fn analyze_foreign_table(
+pub unsafe extern "C-unwind" fn analyze_foreign_table(
     relation: pg_sys::Relation,
     func: *mut pg_sys::AcquireSampleRowsFunc,
     totalpages: *mut pg_sys::BlockNumber,
@@ -464,10 +483,9 @@ pub extern "C" fn analyze_foreign_table(
 ///
 /// This function is called by PostgreSQL to get a sample of rows from the foreign table.
 /// It performs a sequential scan with optional SAMPLE BLOCK clause for large tables.
-#[pg_guard]
-pub extern "C" fn acquire_sample_rows(
+pub unsafe extern "C-unwind" fn acquire_sample_rows(
     relation: pg_sys::Relation,
-    elevel: ::std::os::raw::c_int,
+    _elevel: ::std::os::raw::c_int,
     rows: *mut pg_sys::HeapTuple,
     targrows: ::std::os::raw::c_int,
     totalrows: *mut f64,
@@ -486,8 +504,8 @@ pub extern "C" fn acquire_sample_rows(
         }
 
         // Get relation info
-        let relid = (*relation).rd_id;
-        let tupdesc = pg_sys::RelationGetDescr(relation);
+        let _relid = (*relation).rd_id;
+        let tupdesc = (*relation).rd_att;
         let natts = (*tupdesc).natts as usize;
 
         // Build options from relation
@@ -581,13 +599,12 @@ pub extern "C" fn acquire_sample_rows(
 ///
 /// Currently only supports 2-way INNER joins for SELECT queries,
 /// matching the C implementation's behavior.
-#[pg_guard]
-pub extern "C" fn get_foreign_join_paths(
+pub unsafe extern "C-unwind" fn get_foreign_join_paths(
     root: *mut pg_sys::PlannerInfo,
     joinrel: *mut pg_sys::RelOptInfo,
     outerrel: *mut pg_sys::RelOptInfo,
     innerrel: *mut pg_sys::RelOptInfo,
-    jointype: pg_sys::JoinType,
+    jointype: JoinType,
     extra: *mut pg_sys::JoinPathExtraData,
 ) {
     debug!("get_foreign_join_paths called");
@@ -633,8 +650,8 @@ pub extern "C" fn get_foreign_join_paths(
 
                 // For inner joins, all join conditions must be pushable
                 // Use our predicate pushdown infrastructure
-                let checker = PushdownChecker::db2_default();
-                let mut can_push_all = true;
+                let _checker = PushdownChecker::db2_default();
+                let can_push_all = true;
 
                 for i in 0..list_len {
                     let cell = pg_sys::list_nth_cell(restrict_list, i);
@@ -689,12 +706,14 @@ pub extern "C" fn get_foreign_join_paths(
             joinrel,
             std::ptr::null_mut(), // pathtarget
             join_rows,
+            0, // parallel_workers (PG18 new parameter)
             startup_cost,
             total_cost,
             std::ptr::null_mut(), // pathkeys
             (*joinrel).lateral_relids, // required_outer
             std::ptr::null_mut(), // fdw_outerpath
             std::ptr::null_mut(), // fdw_private
+            std::ptr::null_mut(), // fdw_restrictions (PG18 new parameter)
         );
 
         if !path.is_null() {
@@ -744,6 +763,56 @@ unsafe fn can_push_join(
     // 3. Neither has local conditions that can't be pushed
 
     true
+}
+
+/// Explain a foreign scan
+///
+/// PostgreSQL FDW callback: ExplainForeignScan
+pub unsafe extern "C-unwind" fn explain_foreign_scan(
+    node: *mut pg_sys::ForeignScanState,
+    _es: *mut pg_sys::ExplainState,
+) {
+    debug!("explain_foreign_scan called");
+
+    unsafe {
+        let state = (*node).fdw_state as *const FdwScanState;
+
+        if state.is_null() {
+            return;
+        }
+
+        // Output foreign table name if available
+        // This is a simplified implementation
+        let sql = (*state).plan.sql.as_ptr();
+        if !sql.is_null() {
+            let sql_str = unsafe { CStr::from_ptr(sql as *const i8).to_string_lossy().into_owned() };
+
+            // Use ExplainPropertyText if available, otherwise skip
+            // This would require pgrx to have that function available
+            debug!("Foreign SQL: {}", sql_str);
+        }
+    }
+}
+
+/// Re-scan a foreign scan
+///
+/// PostgreSQL FDW callback: ReScanForeignScan
+pub unsafe extern "C-unwind" fn re_scan_foreign_scan(
+    node: *mut pg_sys::ForeignScanState,
+) {
+    debug!("re_scan_foreign_scan called");
+
+    unsafe {
+        let state = (*node).fdw_state as *mut FdwScanState;
+
+        if state.is_null() {
+            return;
+        }
+
+        // Reset scan state
+        // For now, just set a flag - full implementation would reconnect/reexecute
+        (*state).needs_reinit = true;
+    }
 }
 
 #[cfg(test)]

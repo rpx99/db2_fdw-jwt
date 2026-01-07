@@ -8,6 +8,9 @@ use tracing::{debug, warn};
 
 use db2_query::pushdown::PushdownChecker;
 
+// Use safe FFI wrappers
+use crate::safe_ffi;
+
 /// Result of checking if a clause can be pushed down
 pub struct PushdownResult {
     /// SQL expression that can be pushed to DB2
@@ -222,23 +225,42 @@ unsafe fn deparse_const(const_expr: *mut pg_sys::Const) -> Option<String> {
         pg_sys::FLOAT8OID => Some(format!("{}", f64::from_bits(datum.value() as u64))),
         pg_sys::BOOLOID => Some(if datum.value() != 0 { "TRUE" } else { "FALSE" }.to_string()),
         pg_sys::TEXTOID | pg_sys::VARCHAROID | pg_sys::BPCHAROID => {
-            // Get text value
-            let text = datum.cast_mut_ptr::<pg_sys::varlena>();
-            let data = pg_sys::VARDATA_ANY(text);
-            let len = pg_sys::VARSIZE_ANY_EXHDR(text);
-            let slice = std::slice::from_raw_parts(data as *const u8, len);
-            let s = String::from_utf8_lossy(slice);
-            // Escape single quotes
-            Some(format!("'{}'", s.replace('\'', "''")))
+            // Use safe wrapper with validation
+            unsafe {
+                match safe_ffi::datum_get_text(typid, datum) {
+                    Ok(s) => {
+                        // Escape single quotes
+                        Some(format!("'{}'", s.replace('\'', "''")))
+                    },
+                    Err(e) => {
+                        warn!("Failed to extract text datum: {}", e);
+                        None // Cannot push down invalid data
+                    }
+                }
+            }
         }
         _ => {
-            // Try to use output function
-            let cstr = pg_sys::OidOutputFunctionCall(
-                pg_sys::getTypeOutputInfo(typid, std::ptr::null_mut(), std::ptr::null_mut()),
-                datum,
-            );
-            let s = std::ffi::CStr::from_ptr(cstr).to_string_lossy();
-            Some(format!("'{}'", s.replace('\'', "''")))
+            // Try to use output function with safe wrapper
+            unsafe {
+                match safe_ffi::get_type_output_info(typid) {
+                    Ok(output_func) => {
+                        match safe_ffi::oid_output_call(output_func, datum) {
+                            Ok(s) => {
+                                // Escape single quotes
+                                Some(format!("'{}'", s.replace('\'', "''")))
+                            },
+                            Err(e) => {
+                                warn!("Failed to call output function: {}", e);
+                                None
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        warn!("Failed to get output function for type {:?}: {}", typid, e);
+                        None
+                    }
+                }
+            }
         }
     }
 }
@@ -315,6 +337,7 @@ unsafe fn deparse_bool_expr(
             let arg = (*cell).ptr_value as *mut pg_sys::Expr;
             deparse_expr(arg, checker).map(|sql| format!("NOT ({})", sql))
         }
+        _ => None, // Unsupported bool expression types for pushdown
     }
 }
 
@@ -333,6 +356,7 @@ unsafe fn deparse_null_test(
     let op = match (*null_test).nulltesttype {
         pg_sys::NullTestType::IS_NULL => "IS NULL",
         pg_sys::NullTestType::IS_NOT_NULL => "IS NOT NULL",
+        _ => "IS NULL", // Default for any new types added in future PG versions
     };
 
     Some(format!("{} {}", arg_sql, op))
@@ -411,24 +435,31 @@ unsafe fn deparse_scalar_array_op(
 
 /// Get operator name from OID
 unsafe fn get_operator_name(opno: pg_sys::Oid) -> Option<String> {
-    // Common operators - in real implementation, would query pg_operator
-    match opno {
-        96 => Some("=".to_string()),    // int4eq
-        97 => Some("<".to_string()),    // int4lt
-        521 => Some(">".to_string()),   // int4gt
-        523 => Some("<=".to_string()),  // int4le
-        525 => Some(">=".to_string()),  // int4ge
-        518 => Some("<>".to_string()),  // int4ne
+    // Cannot match against Oid(t) pattern because Oid is a struct with private fields
+    // Instead, extract the numeric value using Debug formatting
+    let oid_num = format!("{:?}", opno);
+
+    // Parse numeric value from Oid debug output (format is "Oid(123)")
+    let oid_num_str = oid_num.strip_prefix("Oid(").unwrap_or("0")
+        .strip_suffix(")").unwrap_or("0");
+
+    match oid_num_str.parse::<u32>() {
+        Ok(96) => Some("=".to_string()),    // int4eq
+        Ok(97) => Some("<".to_string()),    // int4lt
+        Ok(521) => Some(">".to_string()),   // int4gt
+        Ok(523) => Some("<=".to_string()),  // int4le
+        Ok(525) => Some(">=".to_string()),  // int4ge
+        Ok(518) => Some("<>".to_string()),  // int4ne
 
         // Text operators
-        98 => Some("=".to_string()),    // texteq
-        664 => Some("<".to_string()),   // text_lt
-        666 => Some("<=".to_string()),  // text_le
-        665 => Some(">".to_string()),   // text_gt
-        667 => Some(">=".to_string()),  // text_ge
-        531 => Some("<>".to_string()),  // textne
+        Ok(98) => Some("=".to_string()),    // texteq
+        Ok(664) => Some("<".to_string()),   // text_lt
+        Ok(666) => Some("<=".to_string()),  // text_le
+        Ok(665) => Some(">".to_string()),   // text_gt
+        Ok(667) => Some(">=".to_string()),  // text_ge
+        Ok(531) => Some("<>".to_string()),  // textne
 
-        // More can be added as needed
+        // Not in common list, try catalog lookup
         _ => {
             // Try to get from catalog
             let opr = pg_sys::SearchSysCache1(

@@ -1,6 +1,5 @@
 //! EXPLAIN support for foreign scans and modifications
 
-use pgrx::prelude::*;
 use pgrx::pg_sys;
 
 use crate::state::{FdwScanState, FdwModifyState};
@@ -8,8 +7,7 @@ use crate::state::{FdwScanState, FdwModifyState};
 /// Explain a foreign scan
 ///
 /// PostgreSQL FDW callback: ExplainForeignScan
-#[pg_guard]
-pub extern "C" fn explain_foreign_scan(
+pub unsafe extern "C-unwind" fn explain_foreign_scan(
     node: *mut pg_sys::ForeignScanState,
     es: *mut pg_sys::ExplainState,
 ) {
@@ -74,16 +72,17 @@ pub extern "C" fn explain_foreign_scan(
 /// Explain a foreign modify
 ///
 /// PostgreSQL FDW callback: ExplainForeignModify
-#[pg_guard]
-pub extern "C" fn explain_foreign_modify(
-    mtstate: *mut pg_sys::ModifyTableState,
+pub unsafe extern "C-unwind" fn explain_foreign_modify(
+    _mtstate: *mut pg_sys::ModifyTableState,
     resultRelInfo: *mut pg_sys::ResultRelInfo,
-    _fdw_private: *mut pg_sys::List,
-    _subplan_index: ::std::os::raw::c_int,
+    fdw_private: *mut pg_sys::List,
+    subplan_index: ::std::os::raw::c_int,
     es: *mut pg_sys::ExplainState,
 ) {
     unsafe {
         let state = (*resultRelInfo).ri_FdwState as *const FdwModifyState;
+        let _fdw_private = fdw_private; // TODO: use this if needed
+        let _subplan_index = subplan_index; // TODO: use this if needed
 
         if state.is_null() {
             return;

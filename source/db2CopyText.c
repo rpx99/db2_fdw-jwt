@@ -25,9 +25,21 @@ char* db2CopyText (const char* string, int size, int quote) {
   register int j = -1;
   char*    result;
 
+  /* NULL check - prevent segmentation fault */
+  if (string == NULL) {
+    db2Debug1("> db2CopyText - NULL pointer detected");
+    return NULL;
+  }
+
+  /* Check for valid size */
+  if (size < 0) {
+    db2Debug1("> db2CopyText - invalid negative size: %d", size);
+    return NULL;
+  }
+
   db2Debug1("> db2CopyText(string: '%s', size: %d, quote: %d)",string,size,quote);
   /* if "string" is parenthized, return a copy */
-  if (string[0] == '(' && string[size - 1] == ')') {
+  if (size >= 2 && string[0] == '(' && string[size - 1] == ')') {
     result = db2alloc ("copyText", size + 1);
     memcpy (result, string, size);
     result[size] = '\0';

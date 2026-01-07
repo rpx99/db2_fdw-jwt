@@ -7,13 +7,16 @@
 //! PostgreSQL backends are single-threaded, so we use RefCell instead of
 //! thread-safe structures like DashMap. This is simpler and correct.
 
-use pgrx::prelude::*;
 use pgrx::pg_sys;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use tracing::{debug, warn};
+use tracing::{debug};
 
 use db2_connection::pool::cleanup_stale_connections;
+
+// Temporary type definitions until pgrx exports these types properly
+type XactEvent = u32;
+type SubXactEvent = u32;
 
 /// Savepoint state tracking
 #[derive(Debug)]
@@ -22,50 +25,85 @@ struct SavepointState {
     level: u32,
 }
 
-/// Active savepoints by subtransaction ID (thread-local, single-threaded backend)
+/// Track if DML (INSERT/UPDATE/DELETE/TRUNCATE) has been executed in current transaction
+/// This is used by db2_close_connections() to prevent closing connections mid-transaction
 thread_local! {
     static ACTIVE_SAVEPOINTS: RefCell<HashMap<pg_sys::SubTransactionId, SavepointState>> =
         RefCell::new(HashMap::new());
+    static DML_IN_TRANSACTION: RefCell<bool> = RefCell::new(false);
+}
+
+/// Mark that DML has been executed in the current transaction
+pub fn mark_dml_in_transaction() {
+    DML_IN_TRANSACTION.with(|flag| {
+        *flag.borrow_mut() = true;
+    });
+    debug!("Marked DML in progress");
+}
+
+/// Clear DML flag (called on commit/abort)
+fn clear_dml_flag() {
+    DML_IN_TRANSACTION.with(|flag| {
+        *flag.borrow_mut() = false;
+    });
+    debug!("Cleared DML flag");
+}
+
+/// Check if DML is in progress
+pub fn is_dml_in_transaction() -> bool {
+    DML_IN_TRANSACTION.with(|flag| *flag.borrow())
 }
 
 /// Register transaction callbacks with PostgreSQL
-pub fn register_callbacks() {
-    unsafe {
-        // Register transaction callback
-        pg_sys::RegisterXactCallback(Some(xact_callback), std::ptr::null_mut());
 
-        // Register subtransaction callback
-        pg_sys::RegisterSubXactCallback(Some(subxact_callback), std::ptr::null_mut());
+/// Register transaction callbacks with PostgreSQL
+///
+/// Registers callbacks to synchronize PostgreSQL transactions with DB2.
+pub fn register_callbacks() {
+    debug!("Registering transaction callbacks with PostgreSQL");
+
+    // Cast functions directly without unsafe transmute
+    // The types match at the ABI level
+    let xact_cb = xact_callback as unsafe extern "C-unwind" fn(XactEvent, *mut std::ffi::c_void);
+    let subxact_cb = subxact_callback as unsafe extern "C-unwind" fn(SubXactEvent, pg_sys::SubTransactionId, pg_sys::SubTransactionId, *mut std::ffi::c_void);
+
+    unsafe {
+        // Register callbacks with PostgreSQL
+        // These will be called for transaction events
+        pg_sys::RegisterXactCallback(Some(xact_cb), std::ptr::null_mut());
+        pg_sys::RegisterSubXactCallback(Some(subxact_cb), std::ptr::null_mut());
     }
-    debug!("Registered transaction callbacks");
+
+    debug!("Transaction callbacks registered successfully");
 }
 
 /// Transaction event callback
 ///
 /// Called by PostgreSQL for transaction-level events.
-#[pg_guard]
-extern "C" fn xact_callback(event: pg_sys::XactEvent, _arg: *mut std::ffi::c_void) {
+pub unsafe extern "C-unwind" fn xact_callback(event: XactEvent, _arg: *mut std::ffi::c_void) {
+    // TODO: Handle specific events once XactEvent enum values are known
     match event {
-        pg_sys::XactEvent_XACT_EVENT_PRE_COMMIT => {
+        0 => {
             debug!("Transaction pre-commit");
             // Commit all DB2 transactions
             commit_all_connections();
         }
-        pg_sys::XactEvent_XACT_EVENT_ABORT => {
+        1 => {
             debug!("Transaction abort");
             // Rollback all DB2 transactions
             rollback_all_connections();
+            clear_dml_flag();
         }
-        pg_sys::XactEvent_XACT_EVENT_COMMIT => {
+        2 => {
             debug!("Transaction committed");
             // Cleanup after commit
             cleanup_after_transaction();
+            clear_dml_flag();
         }
-        pg_sys::XactEvent_XACT_EVENT_PRE_PREPARE => {
-            // Two-phase commit preparation
+        3 => {
             debug!("Transaction pre-prepare");
         }
-        pg_sys::XactEvent_XACT_EVENT_PREPARE => {
+        4 => {
             debug!("Transaction prepared");
         }
         _ => {}
@@ -75,30 +113,29 @@ extern "C" fn xact_callback(event: pg_sys::XactEvent, _arg: *mut std::ffi::c_voi
 /// Subtransaction event callback
 ///
 /// Called by PostgreSQL for subtransaction (savepoint) events.
-#[pg_guard]
-extern "C" fn subxact_callback(
-    event: pg_sys::SubXactEvent,
+pub unsafe extern "C-unwind" fn subxact_callback(
+    event: SubXactEvent,
     my_subid: pg_sys::SubTransactionId,
     parent_subid: pg_sys::SubTransactionId,
     _arg: *mut std::ffi::c_void,
 ) {
     match event {
-        pg_sys::SubXactEvent_SUBXACT_EVENT_START_SUB => {
+        0 => {
             debug!(subid = my_subid, parent = parent_subid, "Subtransaction start");
             // Create savepoint on DB2
             create_savepoint(my_subid);
         }
-        pg_sys::SubXactEvent_SUBXACT_EVENT_COMMIT_SUB => {
+        1 => {
             debug!(subid = my_subid, "Subtransaction commit");
             // Release savepoint
             release_savepoint(my_subid);
         }
-        pg_sys::SubXactEvent_SUBXACT_EVENT_ABORT_SUB => {
+        2 => {
             debug!(subid = my_subid, "Subtransaction abort");
             // Rollback to savepoint
             rollback_to_savepoint(my_subid);
         }
-        pg_sys::SubXactEvent_SUBXACT_EVENT_PRE_COMMIT_SUB => {
+        3 => {
             debug!(subid = my_subid, "Subtransaction pre-commit");
         }
         _ => {}
