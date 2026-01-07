@@ -1,6 +1,6 @@
 -- DB2 Foreign Data Wrapper for PostgreSQL
 -- Rust Implementation
--- Version 19.0.0
+-- Version 18.2.0
 
 -- Complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION db2_fdw" to load this file. \quit

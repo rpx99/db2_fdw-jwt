@@ -2,7 +2,7 @@
 # Build system for the Rust-based DB2 Foreign Data Wrapper
 
 EXTENSION = db2_fdw
-EXTVERSION = 19.0.0
+EXTVERSION = 18.1.2
 
 # PostgreSQL configuration
 PG_CONFIG ?= pg_config
