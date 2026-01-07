@@ -17,6 +17,7 @@
 //! so we use thread_local! + RefCell instead of thread-safe structures.
 
 use pgrx::prelude::*;
+use pgrx::pg_sys;
 
 pub mod options;
 pub mod scan;
@@ -138,6 +139,15 @@ pub unsafe extern "C" fn db2_fdw_handler(_fcinfo: pg_sys::FunctionCallInfo) -> p
     }
 }
 
+/// Function info record for db2_fdw_handler
+///
+/// This is equivalent to the C macro PG_FUNCTION_INFO_V1(db2_fdw_handler).
+/// PostgreSQL requires this metadata for all SQL-callable functions.
+#[no_mangle]
+pub extern "C" fn pg_finfo_db2_fdw_handler() -> pg_sys::Pg_finfo_record {
+    pg_sys::Pg_finfo_record { api_version: 1 }
+}
+
 /// FDW Validator function
 ///
 /// Validates options for foreign server, table, etc.
@@ -151,6 +161,15 @@ pub unsafe extern "C" fn db2_fdw_validator(_fcinfo: pg_sys::FunctionCallInfo) ->
     pgrx::info!("db2_fdw_validator called (validation TODO)");
 
     pg_sys::Datum::from(0i32)
+}
+
+/// Function info record for db2_fdw_validator
+///
+/// This is equivalent to the C macro PG_FUNCTION_INFO_V1(db2_fdw_validator).
+/// PostgreSQL requires this metadata for all SQL-callable functions.
+#[no_mangle]
+pub extern "C" fn pg_finfo_db2_fdw_validator() -> pg_sys::Pg_finfo_record {
+    pg_sys::Pg_finfo_record { api_version: 1 }
 }
 
 /// Close all DB2 connections
