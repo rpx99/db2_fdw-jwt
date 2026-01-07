@@ -58,8 +58,11 @@ pub extern "C" fn _PG_init() {
 ///
 /// This is called by PostgreSQL to get the FDW callback routines.
 /// It returns a fully initialized FdwRoutine with all callbacks.
+///
+/// Note: Not using #[pg_extern] because FDW handlers have special calling convention.
+/// Using #[no_mangle] to export the symbol.
 #[no_mangle]
-pub extern "C" fn db2_fdw_handler() -> pg_sys::Datum {
+pub unsafe extern "C" fn db2_fdw_handler(_fcinfo: pg_sys::FunctionCallInfo) -> pg_sys::Datum {
     use crate::scan::{
         get_foreign_rel_size, get_foreign_paths, get_foreign_join_paths,
         get_foreign_plan, analyze_foreign_table,
@@ -136,13 +139,18 @@ pub extern "C" fn db2_fdw_handler() -> pg_sys::Datum {
 }
 
 /// FDW Validator function
+///
+/// Validates options for foreign server, table, etc.
+/// Not using #[pg_extern] due to special FDW calling convention.
+///
+/// Note: Simplified implementation - full validation requires parsing text[] array.
 #[no_mangle]
-pub extern "C" fn db2_fdw_validator(options: Vec<String>, catalog: pg_sys::Oid) {
-    let context = OptionContext::from_catalog_oid(catalog);
+pub unsafe extern "C" fn db2_fdw_validator(_fcinfo: pg_sys::FunctionCallInfo) -> pg_sys::Datum {
+    // For now, just log and accept.
+    // Full implementation would need to parse the text[] from PostgreSQL array API
+    pgrx::info!("db2_fdw_validator called (validation TODO)");
 
-    if let Err(e) = validate_options(&options, context) {
-        pgrx::error!("{}", e);
-    }
+    pg_sys::Datum::from(0i32)
 }
 
 /// Close all DB2 connections

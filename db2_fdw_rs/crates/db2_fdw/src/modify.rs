@@ -63,6 +63,7 @@ pub unsafe extern "C-unwind" fn add_foreign_update_targets(
 ///
 /// PostgreSQL FDW callback: PlanForeignModify
 /// Builds the SQL for INSERT/UPDATE/DELETE operations.
+#[allow(non_snake_case)]
 pub unsafe extern "C-unwind" fn plan_foreign_modify(
     root: *mut pg_sys::PlannerInfo,
     plan: *mut pg_sys::ModifyTable,
@@ -93,6 +94,7 @@ pub unsafe extern "C-unwind" fn plan_foreign_modify(
 /// Begin a foreign modification
 ///
 /// PostgreSQL FDW callback: BeginForeignModify
+#[allow(non_snake_case)]
 pub unsafe extern "C-unwind" fn begin_foreign_modify(
     mtstate: *mut pg_sys::ModifyTableState,
     resultRelInfo: *mut pg_sys::ResultRelInfo,
@@ -112,7 +114,7 @@ pub unsafe extern "C-unwind" fn begin_foreign_modify(
 
         // Extract column names
         let mut column_names = Vec::with_capacity(natts);
-        let mut key_column_names = Vec::new();
+        let key_column_names = Vec::new(); // Will be populated from options in real implementation
 
         for i in 0..natts {
             let att = pg_sys::TupleDescAttr(tupdesc, i as i32);
@@ -247,6 +249,7 @@ unsafe fn extract_slot_values(
 /// Execute a foreign INSERT
 ///
 /// PostgreSQL FDW callback: ExecForeignInsert
+#[allow(non_snake_case)]
 pub unsafe extern "C-unwind" fn exec_foreign_insert(
     _estate: *mut pg_sys::EState,
     resultRelInfo: *mut pg_sys::ResultRelInfo,
@@ -336,6 +339,7 @@ fn flush_batch_with_session(state: &mut FdwModifyState) -> Result<usize, String>
 /// Execute a foreign UPDATE
 ///
 /// PostgreSQL FDW callback: ExecForeignUpdate
+#[allow(non_snake_case)]
 pub unsafe extern "C-unwind" fn exec_foreign_update(
     _estate: *mut pg_sys::EState,
     resultRelInfo: *mut pg_sys::ResultRelInfo,
@@ -422,6 +426,7 @@ pub unsafe extern "C-unwind" fn exec_foreign_update(
 /// Execute a foreign DELETE
 ///
 /// PostgreSQL FDW callback: ExecForeignDelete
+#[allow(non_snake_case)]
 pub unsafe extern "C-unwind" fn exec_foreign_delete(
     _estate: *mut pg_sys::EState,
     resultRelInfo: *mut pg_sys::ResultRelInfo,
@@ -501,6 +506,7 @@ pub unsafe extern "C-unwind" fn exec_foreign_delete(
 /// End a foreign modification
 ///
 /// PostgreSQL FDW callback: EndForeignModify
+#[allow(non_snake_case)]
 pub unsafe extern "C-unwind" fn end_foreign_modify(
     _estate: *mut pg_sys::EState,
     resultRelInfo: *mut pg_sys::ResultRelInfo,
@@ -849,7 +855,7 @@ pub unsafe extern "C-unwind" fn is_foreign_rel_updatable(
 /// This is used for bulk insert operations to improve performance.
 pub unsafe extern "C-unwind" fn exec_foreign_batch_insert(
     _estate: *mut pg_sys::EState,
-    _resultRelInfo: *mut pg_sys::ResultRelInfo,
+    _result_rel_info: *mut pg_sys::ResultRelInfo,
     _rri_slot: pg_sys::TupleTableSlot,
     slots: *mut *mut pg_sys::TupleTableSlot,
     nslots: ::std::os::raw::c_int,
@@ -911,7 +917,7 @@ pub unsafe extern "C-unwind" fn begin_foreign_insert(
 /// PostgreSQL FDW callback: EndForeignInsert
 pub unsafe extern "C-unwind" fn end_foreign_insert(
     _estate: *mut pg_sys::EState,
-    _resultRelInfo: *mut pg_sys::ResultRelInfo,
+    _result_rel_info: *mut pg_sys::ResultRelInfo,
 ) {
     debug!("end_foreign_insert called");
     // TODO: Finalize any bulk insert operation

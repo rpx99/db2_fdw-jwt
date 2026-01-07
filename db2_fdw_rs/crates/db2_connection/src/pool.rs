@@ -18,14 +18,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn, instrument};
 
-use db2_odbc::{Db2Connection, Db2Environment, Db2Error, Db2Result};
+use db2_odbc::{Db2Connection, Db2Environment, Db2Result};
 use crate::FdwConnectionOptions;
 
-/// Per-backend connection cache
-///
-/// This is the safe replacement for the C globals `rootenvEntry` and `rootconnEntry`.
-/// Uses RefCell because PostgreSQL backends are single-threaded.
 thread_local! {
+    /// Per-backend connection cache using thread_local RefCell.
+    /// This is the safe replacement for the C globals `rootenvEntry` and `rootconnEntry`.
     static CONNECTION_CACHE: RefCell<ConnectionCache> = RefCell::new(ConnectionCache::new());
 }
 

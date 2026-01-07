@@ -162,8 +162,8 @@ pub struct Db2Connection {
     xact_level: AtomicU32,
     /// Whether connection is read-only
     read_only: bool,
-    /// Connection string for reference
-    connection_string: String,
+    /// Connection string for debugging/reference
+    _connection_string: String,
     /// The actual ODBC connection (None if using stubs)
     #[cfg(feature = "real_odbc")]
     inner: Option<Arc<Mutex<ConnectionInner<'static>>>>,
@@ -208,7 +208,7 @@ impl Db2Connection {
                 server: options.server.clone(),
                 xact_level: AtomicU32::new(0),
                 read_only: options.read_only,
-                connection_string: conn_str,
+                _connection_string: conn_str,
                 inner: Some(Arc::new(Mutex::new(ConnectionInner { connection }))),
             })
         }
@@ -223,7 +223,7 @@ impl Db2Connection {
                 server: options.server.clone(),
                 xact_level: AtomicU32::new(0),
                 read_only: options.read_only,
-                connection_string: conn_str,
+                _connection_string: conn_str,
             })
         }
     }
@@ -426,11 +426,6 @@ impl Db2Connection {
     {
         debug!(connection_id = self.id, "Update in stub mode");
         f(0)
-    }
-
-    /// Get the connection string (for debugging)
-    pub(crate) fn connection_string(&self) -> &str {
-        &self.connection_string
     }
 
     /// Check if the connection is still valid

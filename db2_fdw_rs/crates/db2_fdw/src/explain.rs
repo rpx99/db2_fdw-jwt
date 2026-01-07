@@ -72,6 +72,7 @@ pub unsafe extern "C-unwind" fn explain_foreign_scan(
 /// Explain a foreign modify
 ///
 /// PostgreSQL FDW callback: ExplainForeignModify
+#[allow(non_snake_case)]
 pub unsafe extern "C-unwind" fn explain_foreign_modify(
     _mtstate: *mut pg_sys::ModifyTableState,
     resultRelInfo: *mut pg_sys::ResultRelInfo,

@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use tracing::{debug, info, instrument, warn};
 
-use db2_odbc::{Db2Connection, Db2Error, Db2Result, Db2Value, PreparedStatement, SqlType};
+use db2_odbc::{Db2Connection, Db2Error, Db2Result, Db2Value, PreparedStatement};
 use db2_odbc::statement::ParamInfo;
 use crate::pool::get_connection;
 use crate::FdwConnectionOptions;

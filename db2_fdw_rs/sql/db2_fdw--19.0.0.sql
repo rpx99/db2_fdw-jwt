@@ -9,13 +9,13 @@
 CREATE OR REPLACE FUNCTION db2_fdw_handler()
 RETURNS fdw_handler
 AS 'MODULE_PATHNAME', 'db2_fdw_handler'
-LANGUAGE C STRICT;
+LANGUAGE C;
 
 -- Create the FDW validator function
 CREATE OR REPLACE FUNCTION db2_fdw_validator(text[], oid)
 RETURNS void
 AS 'MODULE_PATHNAME', 'db2_fdw_validator'
-LANGUAGE C STRICT;
+LANGUAGE C;
 
 -- Create the Foreign Data Wrapper
 CREATE FOREIGN DATA WRAPPER db2_fdw

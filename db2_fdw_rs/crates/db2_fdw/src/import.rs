@@ -5,8 +5,6 @@
 use pgrx::pg_sys;
 use tracing::{debug, info};
 
-use crate::options::validate_options;
-
 /// Case folding options for identifiers
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CaseFolding {
@@ -21,6 +19,7 @@ pub enum CaseFolding {
 /// Import a foreign schema
 ///
 /// PostgreSQL FDW callback: ImportForeignSchema
+#[allow(non_snake_case)]
 pub unsafe extern "C-unwind" fn import_foreign_schema(
     stmt: *mut pg_sys::ImportForeignSchemaStmt,
     serverOid: pg_sys::Oid,
@@ -309,9 +308,9 @@ fn try_import_schema(
     let mut commands = Vec::new();
 
     // Import foreign schema type constants (from PostgreSQL enum)
-    const FDW_IMPORT_SCHEMA_ALL: i32 = 0;
+    const _FDW_IMPORT_SCHEMA_ALL: i32 = 0;
     const FDW_IMPORT_SCHEMA_LIMIT_TO: i32 = 1;
-    const FDW_IMPORT_SCHEMA_EXCEPT: i32 = 2;
+    const _FDW_IMPORT_SCHEMA_EXCEPT: i32 = 2;
 
     // If we have limit_tables and it's LIMIT_TO, use those
     let tables_to_import: Vec<&str> = if import_type == FDW_IMPORT_SCHEMA_LIMIT_TO {

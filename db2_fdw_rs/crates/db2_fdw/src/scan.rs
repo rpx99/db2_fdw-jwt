@@ -104,7 +104,7 @@ pub unsafe extern "C-unwind" fn get_foreign_plan(
         let mut columns = Vec::new();
         if !tlist.is_null() {
             let list_len = (*tlist).length;
-            for i in 0..list_len {
+            for _i in 0..list_len {
                 // Each element in target list is a TargetEntry
                 // For now, we'll select all columns
                 columns.push("*".to_string());
@@ -734,7 +734,7 @@ unsafe fn is_simple_rel(rel: *mut pg_sys::RelOptInfo) -> bool {
 
 /// Check if a join between two relations can be pushed to DB2
 unsafe fn can_push_join(
-    root: *mut pg_sys::PlannerInfo,
+    _root: *mut pg_sys::PlannerInfo,
     outerrel: *mut pg_sys::RelOptInfo,
     innerrel: *mut pg_sys::RelOptInfo,
 ) -> bool {
@@ -785,7 +785,7 @@ pub unsafe extern "C-unwind" fn explain_foreign_scan(
         // This is a simplified implementation
         let sql = (*state).plan.sql.as_ptr();
         if !sql.is_null() {
-            let sql_str = unsafe { CStr::from_ptr(sql as *const i8).to_string_lossy().into_owned() };
+            let sql_str = CStr::from_ptr(sql as *const i8).to_string_lossy().into_owned();
 
             // Use ExplainPropertyText if available, otherwise skip
             // This would require pgrx to have that function available

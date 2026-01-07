@@ -25,9 +25,9 @@ struct SavepointState {
     level: u32,
 }
 
-/// Track if DML (INSERT/UPDATE/DELETE/TRUNCATE) has been executed in current transaction
-/// This is used by db2_close_connections() to prevent closing connections mid-transaction
 thread_local! {
+    /// Track if DML has been executed in current transaction.
+    /// Used by db2_close_connections() to prevent closing connections mid-transaction.
     static ACTIVE_SAVEPOINTS: RefCell<HashMap<pg_sys::SubTransactionId, SavepointState>> =
         RefCell::new(HashMap::new());
     static DML_IN_TRANSACTION: RefCell<bool> = RefCell::new(false);
