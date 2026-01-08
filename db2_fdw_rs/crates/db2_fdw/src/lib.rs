@@ -51,8 +51,16 @@ pub extern "C" fn _PG_init() {
     // Register transaction callbacks
     transaction::register_callbacks();
 
-    // Log startup
-    pgrx::log!("db2_fdw {} loaded", VERSION);
+    // Log startup using PostgreSQL's native elog
+    let msg = format!("db2_fdw {} loaded", VERSION);
+    let msg = std::ffi::CString::new(msg).unwrap();
+    unsafe {
+        pg_sys::elog!(
+            pg_sys::NOTICE,
+            "%s",
+            msg.as_ptr()
+        );
+    }
 }
 
 /// FDW Handler function
@@ -85,7 +93,11 @@ pub unsafe extern "C" fn db2_fdw_handler(_fcinfo: pg_sys::FunctionCallInfo) -> p
         let fdwroutine = pg_sys::palloc(std::mem::size_of::<pg_sys::FdwRoutine>()) as *mut pg_sys::FdwRoutine;
 
         if fdwroutine.is_null() {
-            pgrx::error!("Failed to allocate memory for FdwRoutine");
+            pg_sys::elog!(
+                pg_sys::ERROR,
+                "Failed to allocate memory for FdwRoutine"
+            );
+            return pg_sys::Datum::from(0usize);
         }
 
         // Initialize all fields to NULL (PostgreSQL convention)
@@ -144,8 +156,9 @@ pub unsafe extern "C" fn db2_fdw_handler(_fcinfo: pg_sys::FunctionCallInfo) -> p
 /// This is equivalent to the C macro PG_FUNCTION_INFO_V1(db2_fdw_handler).
 /// PostgreSQL requires this metadata for all SQL-callable functions.
 #[no_mangle]
-pub extern "C" fn pg_finfo_db2_fdw_handler() -> pg_sys::Pg_finfo_record {
-    pg_sys::Pg_finfo_record { api_version: 1 }
+pub extern "C" fn pg_finfo_db2_fdw_handler() -> &'static pg_sys::Pg_finfo_record {
+    static INFO: pg_sys::Pg_finfo_record = pg_sys::Pg_finfo_record { api_version: 1 };
+    &INFO
 }
 
 /// FDW Validator function
@@ -158,7 +171,7 @@ pub extern "C" fn pg_finfo_db2_fdw_handler() -> pg_sys::Pg_finfo_record {
 pub unsafe extern "C" fn db2_fdw_validator(_fcinfo: pg_sys::FunctionCallInfo) -> pg_sys::Datum {
     // For now, just log and accept.
     // Full implementation would need to parse the text[] from PostgreSQL array API
-    pgrx::info!("db2_fdw_validator called (validation TODO)");
+    pg_sys::elog!(pg_sys::INFO, "db2_fdw_validator called (validation TODO)");
 
     pg_sys::Datum::from(0i32)
 }
@@ -168,8 +181,9 @@ pub unsafe extern "C" fn db2_fdw_validator(_fcinfo: pg_sys::FunctionCallInfo) ->
 /// This is equivalent to the C macro PG_FUNCTION_INFO_V1(db2_fdw_validator).
 /// PostgreSQL requires this metadata for all SQL-callable functions.
 #[no_mangle]
-pub extern "C" fn pg_finfo_db2_fdw_validator() -> pg_sys::Pg_finfo_record {
-    pg_sys::Pg_finfo_record { api_version: 1 }
+pub extern "C" fn pg_finfo_db2_fdw_validator() -> &'static pg_sys::Pg_finfo_record {
+    static INFO: pg_sys::Pg_finfo_record = pg_sys::Pg_finfo_record { api_version: 1 };
+    &INFO
 }
 
 /// Close all DB2 connections
