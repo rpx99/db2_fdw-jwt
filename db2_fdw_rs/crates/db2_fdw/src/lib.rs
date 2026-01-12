@@ -33,7 +33,7 @@ pub mod safe_ffi;
 use db2_connection::{close_all_connections, get_cache_stats};
 
 // PostgreSQL extension magic
-pg_module_magic!();
+pgrx::pg_module_magic!();
 
 /// Extension version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

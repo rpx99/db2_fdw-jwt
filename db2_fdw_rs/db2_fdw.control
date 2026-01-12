@@ -1,6 +1,6 @@
 # db2_fdw extension
 comment = 'DB2 Foreign Data Wrapper for PostgreSQL (Rust Implementation)'
-default_version = '18.1.2'
+default_version = '@CARGO_VERSION@'
 module_pathname = '$libdir/db2_fdw'
 relocatable = true
 trusted = true
