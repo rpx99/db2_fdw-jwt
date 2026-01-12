@@ -16,7 +16,7 @@ use parking_lot::RwLock;
 use std::ffi::CStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::connection::{AuthMethod, ConnectOptions, Db2ConnHandle, Db2Connection};
 use crate::error::{set_last_error, Db2Error, ErrorCode};

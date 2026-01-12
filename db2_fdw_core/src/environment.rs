@@ -7,7 +7,6 @@ use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
-use std::sync::Arc;
 use tracing::{debug, info};
 
 use odbc_api::Environment;
@@ -57,7 +56,7 @@ pub fn set_nls_lang(value: &str) -> Result<()> {
     let mut storage = nls_storage().write();
 
     // Check if already set to same value
-    if let Some(existing) = storage.get(value) {
+    if let Some(_existing) = storage.get(value) {
         debug!(nls_lang = %value, "NLS_LANG already set");
         return Ok(());
     }

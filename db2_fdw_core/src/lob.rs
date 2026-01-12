@@ -9,7 +9,7 @@
 //! - Manual memory management errors
 
 use std::ffi::CStr;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::error::{set_last_error, Db2Error, ErrorCode};
 use crate::Result;
@@ -190,6 +190,11 @@ impl Clob {
     /// Get character count
     pub fn char_count(&self) -> usize {
         self.data.chars().count()
+    }
+
+    /// Get original length if truncated
+    pub fn original_length(&self) -> Option<usize> {
+        self.original_length
     }
 
     /// Check if empty

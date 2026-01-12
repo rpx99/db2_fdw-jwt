@@ -81,7 +81,6 @@ impl From<odbc_api::Error> for Db2Error {
     }
 }
 
-/// Thread-local storage for last error message
 thread_local! {
     static LAST_ERROR: std::cell::RefCell<Option<CString>> = const { std::cell::RefCell::new(None) };
 }
