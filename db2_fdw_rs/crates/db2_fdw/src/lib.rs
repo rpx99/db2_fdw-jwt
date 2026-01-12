@@ -51,16 +51,8 @@ pub extern "C" fn _PG_init() {
     // Register transaction callbacks
     transaction::register_callbacks();
 
-    // Log startup using PostgreSQL's native elog
-    let msg = format!("db2_fdw {} loaded", VERSION);
-    let msg = std::ffi::CString::new(msg).unwrap();
-    unsafe {
-        pg_sys::elog!(
-            pg_sys::NOTICE,
-            "%s",
-            msg.as_ptr()
-        );
-    }
+    // Log startup using pgrx convenience macro
+    pgrx::notice!("db2_fdw {} loaded", VERSION);
 }
 
 /// FDW Handler function
@@ -93,11 +85,7 @@ pub unsafe extern "C" fn db2_fdw_handler(_fcinfo: pg_sys::FunctionCallInfo) -> p
         let fdwroutine = pg_sys::palloc(std::mem::size_of::<pg_sys::FdwRoutine>()) as *mut pg_sys::FdwRoutine;
 
         if fdwroutine.is_null() {
-            pg_sys::elog!(
-                pg_sys::ERROR,
-                "Failed to allocate memory for FdwRoutine"
-            );
-            return pg_sys::Datum::from(0usize);
+            pgrx::error!("Failed to allocate memory for FdwRoutine");
         }
 
         // Initialize all fields to NULL (PostgreSQL convention)
@@ -171,7 +159,7 @@ pub extern "C" fn pg_finfo_db2_fdw_handler() -> &'static pg_sys::Pg_finfo_record
 pub unsafe extern "C" fn db2_fdw_validator(_fcinfo: pg_sys::FunctionCallInfo) -> pg_sys::Datum {
     // For now, just log and accept.
     // Full implementation would need to parse the text[] from PostgreSQL array API
-    pg_sys::elog!(pg_sys::INFO, "db2_fdw_validator called (validation TODO)");
+    pgrx::log!("db2_fdw_validator called (validation TODO)");
 
     pg_sys::Datum::from(0i32)
 }
