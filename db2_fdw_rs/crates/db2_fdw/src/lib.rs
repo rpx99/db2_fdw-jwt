@@ -89,7 +89,7 @@ pub unsafe extern "C" fn db2_fdw_handler(_fcinfo: pg_sys::FunctionCallInfo) -> p
         }
 
         // Initialize all fields to NULL (PostgreSQL convention)
-        std::ptr::write_bytes(fdwroutine, 0, 1);
+        std::ptr::write_bytes(fdwroutine, 0, std::mem::size_of::<pg_sys::FdwRoutine>());
 
         // Planning callbacks
         (*fdwroutine).GetForeignRelSize = Some(get_foreign_rel_size);
