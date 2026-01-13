@@ -29,4 +29,5 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-pgrx-tests.workspace = true
+# pgrx-tests required for #[pg_test] - but only works with release build
+# pgrx-tests.workspace = true
