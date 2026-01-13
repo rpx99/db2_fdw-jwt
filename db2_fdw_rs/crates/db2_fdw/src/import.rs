@@ -143,11 +143,11 @@ pub unsafe extern "C-unwind" fn import_foreign_schema(
         }
 
         // info!(
-            remote_schema = %remote_schema,
-            local_schema = %local_schema,
-            server = %server_name,
-            "Importing foreign schema"
-        );
+        //     remote_schema = %remote_schema,
+        //     local_schema = %local_schema,
+        //     server = %server_name,
+        //     "Importing foreign schema"
+        // );
 
         // Get import type and table list
         let import_type = (*stmt).list_type;
