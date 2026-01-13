@@ -190,6 +190,9 @@ pub unsafe extern "C-unwind" fn import_foreign_schema(
             pgrx::error!("dbserver option is required for IMPORT FOREIGN SCHEMA");
         }
 
+        // CRITICAL DEBUG: Track progress to narrow down malloc issue
+        pgrx::info!("Starting import for schema: {} tables: {}", remote_schema, limit_tables.len());
+
         // Connect and query
         let mut result: *mut pg_sys::List = std::ptr::null_mut();
 

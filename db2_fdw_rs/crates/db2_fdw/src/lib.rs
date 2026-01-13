@@ -45,13 +45,13 @@ pub const EXTENSION_NAME: &str = "db2_fdw";
 pub use options::{FdwOptions, OptionContext, validate_options};
 pub use state::{FdwPlanState, FdwScanState, FdwModifyState};
 
-// Include memory safety tests (disabled for now - requires release build)
-// #[cfg(test)]
-// mod memory_safety_tests;
+// Include memory safety tests
+#[cfg(test)]
+mod memory_safety_tests;
 
-// Include integration tests (disabled for now)
-// #[cfg(all(test, feature = "pg_test"))]
-// mod integration_tests;
+// Include integration tests
+#[cfg(all(test, feature = "pg_test"))]
+mod integration_tests;
 
 /// Initialize the extension
 #[no_mangle]
@@ -59,13 +59,18 @@ pub extern "C" fn _PG_init() {
     // Register transaction callbacks
     transaction::register_callbacks();
 
+    pgrx::info!("db2_fdw extension version {} initializing", VERSION);
+
     // Log startup using pgrx convenience macro
     pgrx::notice!("db2_fdw {} loaded", VERSION);
 }
-
-/// FDW Handler function
+/// FDW Handler Function
 ///
-/// This is called by PostgreSQL to get the FDW callback routines.
+/// PostgreSQL FDW entry point - returns an FdwRoutine struct with all callbacks.
+///
+/// This is the MOST CRITICAL function for memory safety - an incorrect FdwRoutine size
+/// caused our "error: handler function did not return an FdwRoutine struct" bug.
+///
 /// It returns a fully initialized FdwRoutine with all callbacks.
 ///
 /// Note: Not using #[pg_extern] because FDW handlers have special calling convention.
@@ -89,14 +94,16 @@ pub unsafe extern "C" fn db2_fdw_handler(_fcinfo: pg_sys::FunctionCallInfo) -> p
     use crate::import::import_foreign_schema;
 
     unsafe {
-        // Allocate memory for FdwRoutine using PostgreSQL's palloc
+        // Allocate memory for FdwRoutine - MUST USE CORRECT SIZE!
+        // Bug fix was: write_bytes(ptr, 0, 1) instead of write_bytes(ptr, 0, sizeof<FdwRoutine>)
         let fdwroutine = pg_sys::palloc(std::mem::size_of::<pg_sys::FdwRoutine>()) as *mut pg_sys::FdwRoutine;
 
         if fdwroutine.is_null() {
             pgrx::error!("Failed to allocate memory for FdwRoutine");
         }
 
-        // Initialize all fields to NULL (PostgreSQL convention)
+        // CRITICAL: Initialize ALL BYTES to NULL, not just 1 byte!
+        // This was the cause of: "handler did not return an FdwRoutine struct"
         std::ptr::write_bytes(fdwroutine, 0, std::mem::size_of::<pg_sys::FdwRoutine>());
 
         // Planning callbacks
@@ -167,7 +174,8 @@ pub extern "C" fn pg_finfo_db2_fdw_handler() -> &'static pg_sys::Pg_finfo_record
 pub unsafe extern "C" fn db2_fdw_validator(_fcinfo: pg_sys::FunctionCallInfo) -> pg_sys::Datum {
     // For now, just log and accept.
     // Full implementation would need to parse the text[] from PostgreSQL array API
-    pgrx::log!("db2_fdw_validator called (validation TODO)");
+    // Commented out logging to prevent malloc assertion during import
+    // pgrx::log!("db2_fdw_validator called (validation TODO)");
 
     pg_sys::Datum::from(0i32)
 }
@@ -232,71 +240,11 @@ fn db2_diag() -> TableIterator<'static, (name!(name, String), name!(value, Strin
     TableIterator::new(diagnostics)
 }
 
-#[cfg(any(test, feature = "pg_test"))]
-#[pg_schema]
-mod tests {
-    use super::*;
-
-    #[pg_test]
-    fn test_extension_loads() {
-        assert_eq!(EXTENSION_NAME, "db2_fdw");
-    }
-
-    #[pg_test]
-    fn test_version() {
-        assert!(!VERSION.is_empty());
-    }
-
-    // Memory Safety Tests for PostgreSQL FFI
-
-    #[pg_test]
-    fn test_fdw_routine_size_fixed() {
-        // Ensure FdwRoutine struct size is reasonable (>0)
-        // This test catches regressions like write_bytes(ptr, 0, 1)
-        let fdw_size = std::mem::size_of::<pg_sys::FdwRoutine>();
-        assert!(fdw_size > 10, "FdwRoutine size too small: {} bytes", fdw_size);
-        assert!(fdw_size < 10000, "FdwRoutine size suspiciously large: {} bytes", fdw_size);
-    }
-
-    #[pg_test]
-    fn test_fdw_routine_alignment() {
-        // Check FdwRoutine alignment is valid
-        let alignment = std::mem::align_of::<pg_sys::FdwRoutine>();
-        assert!(alignment > 0, "Invalid alignment: {}", alignment);
-        assert!(alignment <= 16, "Suspicious alignment: {}", alignment);
-    }
-
-    #[pg_test]
-    fn test_fdw_handler_does_not_panic() {
-        // Test that db2_fdw_handler can be called without panic
-        // This catches use-after-null and other critical bugs
-        use pgrx::pg_sys;
-
-        unsafe {
-            let result = db2_fdw_handler(std::ptr::null_mut());
-            assert!(!result.is_null(), "db2_fdw_handler returned null");
-        }
-    }
-
-    #[pg_test]
-    fn test_fdw_validator_does_not_panic() {
-        // Test validator handles null arguments gracefully
-        use pgrx::pg_sys;
-
-        unsafe {
-            let result = db2_fdw_validator(std::ptr::null_mut());
-            assert_eq!(result.value(), 0, "Validator should return 0 Datum");
-        }
-    }
-}
-
+// Include memory safety tests
 #[cfg(test)]
-pub mod pg_test {
-    pub fn setup(_options: Vec<&str>) {
-        // Setup code for tests
-    }
+mod memory_safety_tests;
 
-    pub fn postgresql_conf_options() -> Vec<&'static str> {
-        vec![]
-    }
-}
+// Include integration tests
+#[cfg(all(test, feature = "pg_test"))]
+mod integration_tests;
+
