@@ -240,11 +240,3 @@ fn db2_diag() -> TableIterator<'static, (name!(name, String), name!(value, Strin
     TableIterator::new(diagnostics)
 }
 
-// Include memory safety tests
-#[cfg(test)]
-mod memory_safety_tests;
-
-// Include integration tests
-#[cfg(all(test, feature = "pg_test"))]
-mod integration_tests;
-

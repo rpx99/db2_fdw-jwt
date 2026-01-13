@@ -178,7 +178,7 @@ mod integration_style {
         let natts: usize = 10;
         let _tupdesc: *mut pg_sys::TupleDescData = std::ptr::null_mut();
 
-        for i in 0..natts {
+        for _i in 0..natts {
             // WRONG: Direct call
             // let att = pg_sys::TupleDescAttr(tupdesc, i);
             // let attname = (*att).attname;  // CRASH!
