@@ -19,6 +19,9 @@ description = "DB2 Foreign Data Wrapper for PostgreSQL - Rust Implementation"
 # PostgreSQL Extension Framework
 pgrx = "0.16"
 
+# PostgreSQL Extension Test Framework
+pgrx-tests = "0.16"
+
 # ODBC
 odbc-api = "8.1"
 
