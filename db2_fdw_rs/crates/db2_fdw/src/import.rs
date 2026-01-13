@@ -192,7 +192,7 @@ pub unsafe extern "C-unwind" fn import_foreign_schema(
         }
 
         // Connect and query
-        let result: *mut pg_sys::List = std::ptr::null_mut();
+        let mut result: *mut pg_sys::List = std::ptr::null_mut();
 
         match try_import_schema(
             &connection_string,
