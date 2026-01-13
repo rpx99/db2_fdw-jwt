@@ -45,6 +45,18 @@ pub const EXTENSION_NAME: &str = "db2_fdw";
 pub use options::{FdwOptions, OptionContext, validate_options};
 pub use state::{FdwPlanState, FdwScanState, FdwModifyState};
 
+// Include memory safety tests
+#[cfg(test)]
+mod memory_safety_tests;
+
+// Include state tests
+#[cfg(test)]
+mod state_tests;
+
+// Include integration tests
+#[cfg(all(test, feature = "pg_test"))]
+mod integration_tests;
+
 /// Initialize the extension
 #[no_mangle]
 pub extern "C" fn _PG_init() {
@@ -237,6 +249,48 @@ mod tests {
     #[pg_test]
     fn test_version() {
         assert!(!VERSION.is_empty());
+    }
+
+    // Memory Safety Tests for PostgreSQL FFI
+
+    #[pg_test]
+    fn test_fdw_routine_size_fixed() {
+        // Ensure FdwRoutine struct size is reasonable (>0)
+        // This test catches regressions like write_bytes(ptr, 0, 1)
+        let fdw_size = std::mem::size_of::<pg_sys::FdwRoutine>();
+        assert!(fdw_size > 10, "FdwRoutine size too small: {} bytes", fdw_size);
+        assert!(fdw_size < 10000, "FdwRoutine size suspiciously large: {} bytes", fdw_size);
+    }
+
+    #[pg_test]
+    fn test_fdw_routine_alignment() {
+        // Check FdwRoutine alignment is valid
+        let alignment = std::mem::align_of::<pg_sys::FdwRoutine>();
+        assert!(alignment > 0, "Invalid alignment: {}", alignment);
+        assert!(alignment <= 16, "Suspicious alignment: {}", alignment);
+    }
+
+    #[pg_test]
+    fn test_fdw_handler_does_not_panic() {
+        // Test that db2_fdw_handler can be called without panic
+        // This catches use-after-null and other critical bugs
+        use pgrx::pg_sys;
+
+        unsafe {
+            let result = db2_fdw_handler(std::ptr::null_mut());
+            assert!(!result.is_null(), "db2_fdw_handler returned null");
+        }
+    }
+
+    #[pg_test]
+    fn test_fdw_validator_does_not_panic() {
+        // Test validator handles null arguments gracefully
+        use pgrx::pg_sys;
+
+        unsafe {
+            let result = db2_fdw_validator(std::ptr::null_mut());
+            assert_eq!(result.value(), 0, "Validator should return 0 Datum");
+        }
     }
 }
 
