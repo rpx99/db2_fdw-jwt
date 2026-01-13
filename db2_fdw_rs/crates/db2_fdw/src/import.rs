@@ -24,7 +24,7 @@ pub unsafe extern "C-unwind" fn import_foreign_schema(
     stmt: *mut pg_sys::ImportForeignSchemaStmt,
     serverOid: pg_sys::Oid,
 ) -> *mut pg_sys::List {
-    debug!("import_foreign_schema called");
+    // debug!("import_foreign_schema called");
 
     unsafe {
         if stmt.is_null() {
@@ -142,7 +142,7 @@ pub unsafe extern "C-unwind" fn import_foreign_schema(
             }
         }
 
-        info!(
+        // info!(
             remote_schema = %remote_schema,
             local_schema = %local_schema,
             server = %server_name,
@@ -219,7 +219,7 @@ pub unsafe extern "C-unwind" fn import_foreign_schema(
                 }
 
                 if !result.is_null() {
-                    info!("Import foreign schema complete, {} tables imported", (*result).length);
+                    // info!("Import foreign schema complete, {} tables imported", (*result).length);
                 }
             }
             Err(e) => {
@@ -305,7 +305,8 @@ fn try_import_schema(
         table_filter
     );
 
-    debug!(sql = %tables_sql, "Querying DB2 catalog for tables");
+    // TODO: Debug logging disabled until DB2 connection is stable
+    // // debug!(sql = %tables_sql, "Querying DB2 catalog for tables");
 
     // For now, we'll return a placeholder indicating what would happen
     // In production, this would:
@@ -338,7 +339,7 @@ fn try_import_schema(
             table_name.replace('\'', "''")
         );
 
-        debug!(sql = %columns_sql, "Would query columns for table {}", table_name);
+        // debug!(sql = %columns_sql, "Would query columns for table {}", table_name);
 
         // Fold the table name
         let folded_name = fold_case(table_name, case_folding);
@@ -370,7 +371,7 @@ fn try_import_schema(
         commands.push(create_sql);
     }
 
-    info!("Generated {} CREATE FOREIGN TABLE statements", commands.len());
+    // info!("Generated {} CREATE FOREIGN TABLE statements", commands.len());
     Ok(commands)
 }
 
