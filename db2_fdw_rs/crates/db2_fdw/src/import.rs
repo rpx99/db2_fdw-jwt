@@ -217,7 +217,7 @@ pub unsafe extern "C-unwind" fn import_foreign_schema(
                     if pg_str.is_null() {
                         pgrx::error!("Failed to allocate memory for import command");
                     }
-                    result = pg_sys::lappend(result, pg_str as *mut std::ffi::c_void);
+                    result = crate::safe_lappend!(result, pg_str);
                 }
 
                 if !result.is_null() {

@@ -5,6 +5,86 @@
 
 use pgrx::pg_sys;
 
+/// Safe wrapper for pg_sys::palloc
+/// Exits early with error if allocation fails
+/// Usage: let ptr = safe_palloc!(size)?;
+#[macro_export]
+macro_rules! safe_palloc {
+    ($size:expr) => {{
+        let ptr = pg_sys::palloc($size);
+        if ptr.is_null() {
+            return Err(format!("palloc({}) failed", $size).into());
+        }
+        ptr
+    }};
+}
+
+/// Safe wrapper for pg_sys::pstrdup
+/// Exits early with error if allocation fails
+/// Usage: let cstr = safe_pstrdup!(ptr)?;
+#[macro_export]
+macro_rules! safe_pstrdup {
+    ($ptr:expr) => {{
+        let ptr = pg_sys::pstrdup($ptr);
+        if ptr.is_null() {
+            return Err("pstrdup failed - out of memory".to_string().into());
+        }
+        ptr
+    }};
+}
+
+/// Safe wrapper for pg_sys::lappend
+/// Exits early with error if allocation fails
+/// Usage: list = safe_lappend!(list, item)?;
+#[macro_export]
+macro_rules! safe_lappend {
+    ($list:expr, $item:expr) => {{
+        let result = pg_sys::lappend($list, $item as *mut std::ffi::c_void);
+        if result.is_null() {
+            return Err("lappend failed - out of memory".to_string().into());
+        }
+        result
+    }};
+}
+
+/// Safe wrapper for CString creation from Rust string
+/// Exits early with error if string contains null bytes
+/// Usage: let cstr = safe_cstring!(rust_str)?;
+#[macro_export]
+macro_rules! safe_cstring {
+    ($str:expr) => {{
+        match std::ffi::CString::new($str) {
+            Ok(cstr) => cstr,
+            Err(e) => return Err(format!("CString conversion failed: {}", e).into()),
+        }
+    }};
+}
+
+/// Safe wrapper for CStr to String conversion with null check
+/// Exits early with error if pointer is null
+/// Usage: let s = safe_cstr_to_str!(ptr)?;
+#[macro_export]
+macro_rules! safe_cstr_to_str {
+    ($ptr:expr) => {{
+        if $ptr.is_null() {
+            return Err("Null pointer in CStr conversion".to_string().into());
+        }
+        unsafe {
+            match std::ffi::CStr::from_ptr($ptr).to_str() {
+                Ok(s) => s,
+                Err(e) => return Err(format!("Invalid UTF-8 in CStr: {}", e).into()),
+            }
+        }
+    }};
+}
+
+/// Safe FFI Wrappers
+///
+/// This module provides safe wrappers around unsafe PostgreSQL FFI calls.
+/// All operations include safety checks and proper error handling.
+
+use pgrx::pg_sys;
+
 /// Get type output function with safety checks
 ///
 /// # Safety

@@ -73,6 +73,12 @@ RUN echo "/opt/ibm/db2/lib" > /etc/ld.so.conf.d/db2.conf && ldconfig
 WORKDIR /build/db2_fdw_rs
 COPY db2_fdw_rs/ ./
 
+# Run Memory Safety Tests before building
+RUN . /etc/profile.d/pg.sh && \
+    echo "Running Memory Safety Tests..." && \
+    cargo pgrx test --package db2_fdw --features pg${PG_VERSION} || \
+    (echo "Memory Safety Tests FAILED!" && exit 1)
+
 # Build the Rust FDW
 RUN . /etc/profile.d/pg.sh && \
     cargo pgrx package --pg-config /usr/lib/postgresql/${PG_VERSION}/bin/pg_config
