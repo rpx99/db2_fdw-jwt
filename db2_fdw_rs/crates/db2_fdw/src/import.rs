@@ -65,6 +65,9 @@ pub unsafe extern "C-unwind" fn import_foreign_schema(
 
         // Get FDW
         let wrapper = pg_sys::GetForeignDataWrapper((*server).fdwid);
+        if wrapper.is_null() {
+            pgrx::error!("Could not get foreign data wrapper");
+        }
 
         // Collect all options from wrapper, server, and user mapping
         let mut dbserver: Option<String> = None;
@@ -189,7 +192,7 @@ pub unsafe extern "C-unwind" fn import_foreign_schema(
         }
 
         // Connect and query
-        let mut result: *mut pg_sys::List = std::ptr::null_mut();
+        let result: *mut pg_sys::List = std::ptr::null_mut();
 
         match try_import_schema(
             &connection_string,
@@ -209,10 +212,15 @@ pub unsafe extern "C-unwind" fn import_foreign_schema(
                 for cmd in commands {
                     let cstr = std::ffi::CString::new(cmd.as_str()).unwrap_or_default();
                     let pg_str = pg_sys::pstrdup(cstr.as_ptr());
+                    if pg_str.is_null() {
+                        pgrx::error!("Failed to allocate memory for import command");
+                    }
                     result = pg_sys::lappend(result, pg_str as *mut std::ffi::c_void);
                 }
 
-                info!("Import foreign schema complete, {} tables imported", (*result).length);
+                if !result.is_null() {
+                    info!("Import foreign schema complete, {} tables imported", (*result).length);
+                }
             }
             Err(e) => {
                 pgrx::error!("Failed to import foreign schema: {}", e);

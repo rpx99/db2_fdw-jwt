@@ -386,6 +386,9 @@ unsafe fn fill_tuple_slot(
                 *nulls.add(i) = false;
                 // Convert to PostgreSQL bytea
                 let bytea = pg_sys::palloc(b.len() + pg_sys::VARHDRSZ as usize) as *mut u8;
+                if bytea.is_null() {
+                    return Err("Failed to allocate memory for bytea value".to_string());
+                }
                 set_varsize(bytea, (b.len() + pg_sys::VARHDRSZ as usize) as i32);
                 std::ptr::copy_nonoverlapping(
                     b.as_ptr(),
