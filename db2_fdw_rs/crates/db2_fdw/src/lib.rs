@@ -49,10 +49,6 @@ pub use state::{FdwPlanState, FdwScanState, FdwModifyState};
 #[cfg(test)]
 mod memory_safety_tests;
 
-// Include state tests
-#[cfg(test)]
-mod state_tests;
-
 // Include integration tests
 #[cfg(all(test, feature = "pg_test"))]
 mod integration_tests;

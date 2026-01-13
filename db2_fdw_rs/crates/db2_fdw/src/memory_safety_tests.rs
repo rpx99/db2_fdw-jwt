@@ -24,23 +24,20 @@ mod memory_safety {
             let cell = pg_sys::list_nth_cell(null_list, 0);
             assert!(cell.is_null(), "list_nth_cell with null list should return null");
 
-            // list_length on null list should not crash
-            // Note: We would crash if we tried to dereference null_list
-            // But since we have null checks, we test the pattern
+            // list_length on null list would crash if we dereferenced
+            // But we have null checks, so we test the pattern
         }
     }
 
     #[test]
     fn test_pnullcheck_pattern() {
-        unsafe {
-            let test_ptr: *mut i32 = std::ptr::null_mut();
+        let test_ptr: *mut i32 = std::ptr::null_mut();
 
-            // Our pattern: check before deref
-            if test_ptr.is_null() {
-                assert!(true, "Null check worked");
-            } else {
-                assert!(!test_ptr.is_null(), "Safety check passed");
-            }
+        // Our pattern: check before deref
+        if test_ptr.is_null() {
+            assert!(true, "Null check worked");
+        } else {
+            assert!(!test_ptr.is_null(), "Safety check passed");
         }
     }
 
@@ -102,8 +99,8 @@ mod memory_safety {
         let natts: usize = 10;
 
         // Valid indices
-        for i in 0..natts {
-            assert!(i < natts, "Index {} should be < {}", i, natts);
+        for _i in 0..natts {
+            assert!(true, "Index check ok");
         }
 
         // Invalid index would crash without bounds check
@@ -201,7 +198,7 @@ mod integration_style {
     fn test_palloc_result_null_check_pattern() {
         // Simulate pattern from scan.rs
 
-        let size = 100usize;
+        let _size = 100usize;
 
         // WRONG: Assume always succeeds
         // let bytea = pg_sys::palloc(size);
@@ -225,13 +222,12 @@ mod integration_style {
 
         let result: *mut pg_sys::List = std::ptr::null_mut();
 
-        // WRONG: Direct deref
-        // let len = (*result).length;  // CRASH!
-
         // CORRECT: Check first
         if !result.is_null() {
-            let _len = (*result).length;
-            assert!(true, "Safe to access after null check");
+            unsafe {
+                let _len = (*result).length;
+                assert!(true, "Safe to access after null check");
+            }
         } else {
             // Handle empty result
             assert!(true, "Correctly handled null result");

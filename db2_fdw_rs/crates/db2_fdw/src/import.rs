@@ -3,7 +3,6 @@
 //! Imports table definitions from DB2 into PostgreSQL.
 
 use pgrx::pg_sys;
-use tracing::{debug, info};
 
 /// Case folding options for identifiers
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -299,7 +298,7 @@ fn try_import_schema(
     readonly: bool,
 ) -> Result<Vec<String>, String> {
     // Query to get tables
-    let tables_sql = format!(
+    let _tables_sql = format!(
         "SELECT TABNAME FROM SYSCAT.TABLES WHERE TABSCHEMA = '{}' AND TYPE = 'T'{}",
         remote_schema.replace('\'', "''"),
         table_filter
@@ -332,7 +331,7 @@ fn try_import_schema(
     // Build CREATE FOREIGN TABLE for each table
     for table_name in tables_to_import {
         // Query columns
-        let columns_sql = format!(
+        let _columns_sql = format!(
             "SELECT COLNAME, TYPENAME, NULLS, LENGTH, SCALE FROM SYSCAT.COLUMNS \
              WHERE TABSCHEMA = '{}' AND TABNAME = '{}' ORDER BY COLNO",
             remote_schema.replace('\'', "''"),
