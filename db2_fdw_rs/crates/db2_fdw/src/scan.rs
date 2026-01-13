@@ -541,6 +541,9 @@ pub unsafe extern "C-unwind" fn acquire_sample_rows(
         let mut column_list = Vec::new();
         for i in 0..natts {
             let att = pg_sys::TupleDescAttr(tupdesc, i as i32);
+            if att.is_null() {
+                continue;
+            }
             if !(*att).attisdropped {
                 let attname = std::ffi::CStr::from_ptr((*att).attname.data.as_ptr())
                     .to_string_lossy()

@@ -47,6 +47,9 @@ pub unsafe extern "C-unwind" fn add_foreign_update_targets(
         // These columns are needed for UPDATE/DELETE WHERE clauses
         for i in 0..natts {
             let att = pg_sys::TupleDescAttr(tupdesc, i);
+            if att.is_null() {
+                continue;
+            }
             let attname = std::ffi::CStr::from_ptr((*att).attname.data.as_ptr())
                 .to_string_lossy();
 
@@ -118,6 +121,9 @@ pub unsafe extern "C-unwind" fn begin_foreign_modify(
 
         for i in 0..natts {
             let att = pg_sys::TupleDescAttr(tupdesc, i as i32);
+            if att.is_null() {
+                continue;
+            }
             if !(*att).attisdropped {
                 let name = std::ffi::CStr::from_ptr((*att).attname.data.as_ptr())
                     .to_string_lossy()
@@ -186,6 +192,9 @@ unsafe fn extract_slot_values(
         } else {
             let datum = *values.add(i);
             let att = pg_sys::TupleDescAttr(tupdesc, i as i32);
+            if att.is_null() {
+                return Err("Cannot get attribute descriptor for column".to_string());
+            }
             let typid = (*att).atttypid;
 
             // Convert PostgreSQL datum to Db2Value based on type
